@@ -100,6 +100,45 @@ PACE stores the derived coefficients and links.
 
 ## Update audit log
 
+### Explicit live ball inertia (2026-11-06)
+
+The [ball spawner](../legged_lab/assets/table_tennis/ball_spawner.py), selected
+by [BALL_CFG](../legged_lab/assets/table_tennis/ball.py), now writes explicit
+USD mass-distribution attributes at spawn time. With the unchanged nominal
+mass `m = 0.0027 kg` and radius `r = 0.020 m` from the ITTF entries above,
+each principal inertia is `(2/3) * m * r² = 7.2e-7 kg m²`. The factor `2/3`
+is the uniform thin spherical shell assumption already used in
+`resolve_ball_impact`, obtained by integrating squared distance to a diameter
+over the shell. Center of mass is `(0, 0, 0) m` in the body frame and principal
+axes use the identity quaternion. These are derived geometry assumptions,
+not ITTF-specified inertia values or new experimental fits. A uniform solid
+sphere with the same mass/radius would have `4.32e-7 kg m²`; explicitly
+authoring the shell value removes reliance on collider-based mass inference.
+
+Implementation references checked against the project's Isaac Lab 2.1.0:
+
+- [MassPropertiesCfg at v2.1.0](https://github.com/isaac-sim/IsaacLab/blob/v2.1.0/source/isaaclab/isaaclab/sim/schemas/schemas_cfg.py)
+  exposes mass and density, so inertia is authored using USD MassAPI.
+- [Sphere spawning at v2.1.0](https://github.com/isaac-sim/IsaacLab/blob/v2.1.0/source/isaaclab/isaaclab/sim/spawners/shapes/shapes.py)
+  places mass/rigid-body APIs on the root and the sphere collider below it.
+- [Clone decorator at v2.1.0](https://github.com/isaac-sim/IsaacLab/blob/v2.1.0/source/isaaclab/isaaclab/sim/utils.py)
+  calls the wrapped function for the first concrete path before cloning.
+  The custom spawner writes inertia within that function, before copies exist.
+- [OpenUSD MassAPI, 25.11 reference](https://openusd.org/25.11/api/class_usd_physics_mass_a_p_i.html)
+  defines nonzero diagonal inertia in stage mass × distance² units, local
+  center of mass and principal-axis orientation. This change assumes PACE's
+  meter/kilogram stage and unscaled asset; it does not introduce a USD version
+  requirement or rescale assets.
+
+CPU checks cover the nominal value, mass/radius scaling, invalid inputs,
+root authoring, USD copying/inheritance and consistency with the offline
+angular impulse. The sphere spawner is stubbed in these tests; PhysX inertia
+readback, contact response and transfer of the existing racket fit to the
+live simulation remain unverified. No new data, dataset split, fitted value,
+or dependency requirement was added. Ball mass/radius, aerodynamic inputs,
+contact materials and the offline impulse formula retain their existing
+provenance entries and values.
+
 ### Analytical table rebound update (2026-11-06)
 
 The [table prediction helper](../legged_lab/physics/table_prediction.py) now
@@ -135,3 +174,4 @@ high-spin flight still need separate validation.
 | --- | --- | --- |
 | 2026-11-04 | Baseline `77e8017`, covering [PR #2](https://github.com/ohowo/PACE-ICRA2026/pull/2), [PR #3](https://github.com/ohowo/PACE-ICRA2026/pull/3), [PR #4](https://github.com/ohowo/PACE-ICRA2026/pull/4) and [PR #5](https://github.com/ohowo/PACE-ICRA2026/pull/5) | Created the register, checked the four dataset blobs at the pinned revision and reran the coefficient fit and test-set evaluation. Recorded the standards, inherited values and remaining validation gaps. This change updates the documentation and maintenance rules. |
 | 2026-11-06 | Table rebound prediction at base `caf7ade` | Reviewed ball, air and contact inputs. No new external data or coefficient fit. Recorded the derived approach-speed formula, inherited rebound factors, CPU checks and remaining approximations. |
+| 2026-11-06 | Live ball inertia at base `5f06748` | Applied the existing thin-shell assumption to the live asset, checked Isaac Lab 2.1.0 spawning/cloning and USD mass-attribute semantics, and recorded derived SI inertia plus CPU/runtime validation limits. Existing physical inputs and their source entries are unchanged. |

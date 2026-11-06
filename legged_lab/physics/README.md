@@ -173,6 +173,21 @@ and the configured ball mass, giving 0.124804 m⁻¹. Its closed-form flight
 estimate still treats the axes separately. The constant `Cd` is a PACE model
 parameter. Experimental drag can depend on speed and spin.
 
+The table predictor now computes the incident horizontal velocity before
+applying either rebound model. For each horizontal component,
+`v_impact = v_now / (1 + k * abs(v_now) * time_to_impact)`, the closed-form
+solution of `dv/dt = -k * abs(v) * v`. The default rebound retains 70% of
+this incident velocity and uses `bounce_restitution` (default 0.90) for the
+normal component. Previously the default branch applied 70% directly to the
+current velocity, restoring speed lost during the approach to the table.
+
+`predict_table_rebound` uses batched tensor operations with no integration
+loop, new dependencies, or live PhysX impulse. The optional spin-aware branch
+receives the same incident velocity. Vertical approach remains ballistic,
+and the prediction still omits vector drag coupling and Magnus lift. This
+correction improves internal consistency without calibrating a new contact
+law or changing the aerodynamic coefficients.
+
 ITTF Law 2.1.3 specifies about 230 mm rebound from a 300 mm drop onto the
 playing surface. In the one-dimensional quadratic-drag model above, that
 corresponds to a normal restitution of about 0.905. The existing analytical

@@ -34,7 +34,7 @@ from legged_lab.utils.env_utils.scene import SceneCfg
 # ! Aerodynamics : BEGIN
 from legged_lab.physics.aerodynamics import AeroForceField
 # ! Aerodynamics : END
-from legged_lab.physics.ball_impact import resolve_ball_impact
+from legged_lab.physics.table_prediction import predict_table_rebound
 
 #TODO: move this functio to tt_config.py
 @configclass
@@ -977,27 +977,21 @@ class TTEnv(VecEnv):
         t_land = torch.clamp(t_land, min=0.0)
         self.valid_before = (D >= 0.0) & self.mask_before
         t1 = torch.where(self.valid_before, t_land, torch.zeros_like(t_land))
-        vz_prime = vz - g * t1
         k_scalar = torch.tensor(max(1e-8, self.ball_drag_k), device=self.device, dtype=vz.dtype)
 
         table = self.cfg.table
-        if table.bounce_friction is None:
-            vx_bounce, vy_bounce, vz_dd = 0.7 * vx, 0.7 * vy, -0.9 * vz_prime
-        else:
-            # Match the pre-bounce horizontal drag and ballistic vertical approximations.
-            vx_impact = vx / (1 + k_scalar * vx.abs() * t1)
-            vy_impact = vy / (1 + k_scalar * vy.abs() * t1)
-            incident = torch.stack((vx_impact, vy_impact, vz_prime), dim=-1)
-            rebound, _ = resolve_ball_impact(
-                incident,
-                self.ball_angvel,
-                incident.new_tensor((0.0, 0.0, 1.0)),
-                radius=self.aero.r,
-                restitution=table.bounce_restitution,
-                friction=table.bounce_friction,
-                tangential_restitution=table.bounce_tangential_restitution,
-            )
-            vx_bounce, vy_bounce, vz_dd = rebound.unbind(dim=-1)
+        rebound = predict_table_rebound(
+            self.ball_linvel,
+            self.ball_angvel,
+            t1,
+            drag_k=k_scalar,
+            gravity=g,
+            radius=self.aero.r,
+            restitution=table.bounce_restitution,
+            friction=table.bounce_friction,
+            tangential_restitution=table.bounce_tangential_restitution,
+        )
+        vx_bounce, vy_bounce, vz_dd = rebound.unbind(dim=-1)
 
         # Drag-adjusted ascent after first bounce
         sqrt_gk = torch.sqrt(torch.clamp(torch.tensor(g, device=self.device, dtype=vz.dtype) * k_scalar, min=1e-12))

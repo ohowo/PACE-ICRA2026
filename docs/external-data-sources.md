@@ -100,6 +100,38 @@ PACE stores the derived coefficients and links.
 
 ## Update audit log
 
+### Analytical table rebound update (2026-11-06)
+
+The [table prediction helper](../legged_lab/physics/table_prediction.py) now
+uses `v_impact = v_now / (1 + k * abs(v_now) * t)` for each horizontal
+component before applying either the default rebound or the optional
+spin-aware impact. This formula is derived by integrating the existing
+per-axis equation `dv/dt = -k * abs(v) * v`. Here `v` is in m/s, `t` is in
+seconds, and `k = rho * pi * r^2 * Cd / (2m)` is in inverse meters.
+
+The active inputs remain radius 0.020 m, mass 0.0027 kg, air density
+1.225 kg/m³ and `Cd = 0.4378`, with the standards and inheritance recorded
+above. The existing horizontal rebound multiplier 0.70 is unchanged.
+Normal restitution now reads `bounce_restitution` in both branches, retaining
+the default 0.90. Neither coefficient was fitted again, and no external
+dataset or published constant was added by this update.
+
+For the representative launch `(1.35, 0, 1.03) m` at
+`(-5.75, 0, 1.75) m/s`, the existing ballistic contact-time estimate is
+0.466124 s. Predicted rebound X velocity changes from -4.025 to
+-3.016109 m/s. The predicted rebound apex X changes from -1.917866 to
+-1.688787 m when only this approach-speed inconsistency is corrected.
+These are analytical comparisons, not real-world accuracy measurements.
+
+CPU regression tests compare horizontal velocities with independent RK4
+integration of the same per-axis drag ODE, exercise zero drag and zero
+flight time, and check the optional spin-aware path, batched shapes and
+non-mutating inputs. The helper has no time-stepping loop or GPU-to-CPU
+scalar readback. The existing ballistic vertical approach and separate-axis
+flight approximation remain. Physical rebound, vector-drag prediction and
+high-spin flight still need separate validation.
+
 | Date | Code or change reviewed | Provenance check |
 | --- | --- | --- |
 | 2026-11-04 | Baseline `77e8017`, covering [PR #2](https://github.com/ohowo/PACE-ICRA2026/pull/2), [PR #3](https://github.com/ohowo/PACE-ICRA2026/pull/3), [PR #4](https://github.com/ohowo/PACE-ICRA2026/pull/4) and [PR #5](https://github.com/ohowo/PACE-ICRA2026/pull/5) | Created the register, checked the four dataset blobs at the pinned revision and reran the coefficient fit and test-set evaluation. Recorded the standards, inherited values and remaining validation gaps. This change updates the documentation and maintenance rules. |
+| 2026-11-06 | Table rebound prediction at base `caf7ade` | Reviewed ball, air and contact inputs. No new external data or coefficient fit. Recorded the derived approach-speed formula, inherited rebound factors, CPU checks and remaining approximations. |

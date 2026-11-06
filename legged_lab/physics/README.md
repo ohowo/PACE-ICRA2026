@@ -165,6 +165,23 @@ F, T = model.calculate_forces_and_torques(v, w, ball_props, env_props, params)
 
 ## Match ball and rebound reference
 
+The live `BALL_CFG` uses `spawn_thin_shell_ball` to author the ball's inertia
+on its USD rigid-body root before cloning environments. Each principal
+component is `I = (2/3) * mass * radius**2`, or `7.2e-7 kg m²` for the
+nominal ball. The center of mass is the sphere center. This uniform thin-shell
+assumption matches `resolve_ball_impact`; it is not a measured inertia or an
+ITTF inertia requirement. Mass and radius remain configurable, and inertia
+is derived from them at spawn time with no per-step work. PACE uses SI stage
+units and an unscaled sphere. Geometry and contact materials are unchanged.
+
+CPU checks: `python -m unittest discover -s tests -p 'test_*.py'`.
+The inertia authoring tests need `pxr` (available in Isaac Sim or `usd-core`);
+without it those five tests are explicitly skipped. They use real USD stages
+with a stub sphere spawner, verify copy/inheritance and compare angular impulse
+with the offline model. They do not validate PhysX dynamics. Reading back
+the initialized PhysX inertia and checking contact-induced spin remain runtime
+validation tasks.
+
 The `t1_tt` ball uses the ITTF nominal diameter of 40 mm, mass of 2.7 g,
 and a matte white appearance. The simulation uses quadratic vector drag with
 the existing PACE values of 1.225 kg/m³ for air density and 0.4378 for `Cd`.

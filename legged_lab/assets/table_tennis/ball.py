@@ -4,10 +4,12 @@ from isaaclab.assets.articulation import ArticulationCfg
 from isaaclab.assets.rigid_object import RigidObjectCfg
 
 from legged_lab.assets import ISAAC_ASSET_DIR
+from legged_lab.assets.table_tennis.ball_spawner import spawn_thin_shell_ball
 
 BALL_CFG = RigidObjectCfg(
     prim_path="/World/envs/env_.*/Ball",
     spawn=sim_utils.SphereCfg(
+        func=spawn_thin_shell_ball,
         radius=0.02,  # ITTF nominal ball diameter is 40 mm (Law 2.3).
         rigid_props=sim_utils.RigidBodyPropertiesCfg(
             kinematic_enabled=False,

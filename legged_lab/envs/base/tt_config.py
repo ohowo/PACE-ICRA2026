@@ -79,7 +79,8 @@ class BallCfg:
     num_new_serves = 2
     max_serve_per_episode: int = 5
     serve_spin_w: tuple[float, float, float] = (0.0, 0.0, 0.0)  # rad/s
-    magnus_factor: float = 0.0
+    magnus_factor: float = 0.0  # Used only in constant mode; 0 disables Magnus there.
+    magnus_model: str = "conti2026"  # Speed/spin-dependent force, updated each physics substep.
 
 
 @configclass

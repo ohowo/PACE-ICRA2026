@@ -160,8 +160,53 @@ F, T = model.calculate_forces_and_torques(v, w, ball_props, env_props, params)
 ## Tuning
 
 * `drag_coeff`: fit from deceleration vs. speed; typical spheres \~0.4–0.5.
-* `magnus_factor`: fit from lateral deflection vs. spin; `0.0` disables Magnus.
+* With `magnus_model="constant"`, `magnus_factor` is the fixed kappa; `0.0` disables Magnus.
 * Use SI units and world-frame velocities.
+
+## Dynamic Magnus force in the live task
+
+`cfg.ball.magnus_model = "conti2026"` is now the task default. At each
+physics substep the force adapter reads current world velocity and angular
+velocity, subtracts air velocity, and recomputes
+
+`kappa(t) = (8/3) * C_M(|v(t) - u|, |omega(t)|)`
+
+`F_M(t) = 0.5 * rho * pi * r^3 * kappa(t) * (omega(t) x (v(t) - u))`.
+
+The scalar coefficient uses the piecewise curves in Conti et al.,
+arXiv:2606.28805v2, Eq. (5), Tables II-III. Evaluate the two neighboring
+speed curves at current spin, then interpolate their nonnegative C_M
+values linearly in speed. The adapter caches only table constants, not
+the changing coefficient. Computation is batched with no per-ball Python
+loop. See the [source register](../../docs/external-data-sources.md#dynamic-magnus-force-2026-11-06)
+for all coefficients, units, transformations and limitations.
+
+The lookup speed is clamped to 2-17 m/s and lookup spin to 0-1000 rad/s.
+Actual vectors still enter the cross product; forces outside that envelope
+are unvalidated extensions. The rounded source curves have small jumps
+at some spin breakpoints, which are retained rather than silently refitted.
+This reference model is restricted to the nominal 0.020 m radius. It is
+not a calibration for the exact PACE ball or a dynamic-stall model.
+
+The task applies force before `sim.step` and refreshes state afterward,
+every `physics_dt` (currently 0.002 s). PhysX integrates forces over time:
+the force in newtons is not multiplied by dt in the adapter. Time dependence
+comes from the evolving state; no arbitrary elapsed-time multiplier or
+spin-decay law is added. Aerodynamic torque remains zero.
+
+The standalone `AeroForceField` constructor keeps its `"constant"` default
+for compatibility with existing callers. In the task, select
+`cfg.ball.magnus_model = "constant"` to use the existing `magnus_factor`
+(zero disables the force). In `"conti2026"` mode that fixed factor is ignored.
+Initial serve spin remains zero; Magnus becomes nonzero when contact or
+configuration produces a spin component transverse to relative velocity.
+
+**Scope:** this change enables the state-dependent live force. The analytical
+landing/apex predictor still omits Magnus and will disagree with spinning
+live trajectories. Predictive training signals are therefore not validated
+for this mode. CPU tests verify force equations, changing-state updates and
+the real environment substep loop with stand-in physics; no Isaac Sim/GPU
+run or real-world validation has been performed.
 
 ## Match ball and rebound reference
 

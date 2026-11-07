@@ -212,6 +212,7 @@ class TTEnv(VecEnv):
             # drag_coeff = 0.0 # ! Set to zero to disable aerodynamics
             drag_coeff=0.4378,  # Existing PACE calibration
             magnus_factor=self.cfg.ball.magnus_factor,
+            magnus_model=self.cfg.ball.magnus_model,
         )
         # ! Aerodynamics Init : am
 
@@ -733,7 +734,8 @@ class TTEnv(VecEnv):
             self.sim_step_counter += 1
             self.robot.set_joint_position_target(processed_actions, self.action_joint_ids)
             # ! Aerodynamics: Step : BEGIN
-            # ! Step before self.scene.write_data_to_sim(), update per decimation step
+            # Read current velocity/spin and recompute forces every physics substep.
+            # PhysX integrates forces over physics_dt; do not multiply them by dt here.
             self.aero.apply_to_rigid_object(self.ball)
             # ! Aerodynamics: Step : END
             self.scene.write_data_to_sim()

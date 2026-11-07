@@ -96,9 +96,71 @@ PACE stores the derived coefficients and links.
 | Analytical drag constant 0.1248038406 m⁻¹ | Derived in [the force adapter](../legged_lab/physics/aerodynamics.py) as `rho * pi * r**2 * Cd / (2 * mass)`. Uses the values above and the ITTF nominal ball. The CPU test checks the constant against the force. [Conti et al., arXiv:2606.28805v2](https://arxiv.org/abs/2606.28805v2) provides context on speed and spin dependence, without supplying a coefficient to PACE. |
 | Table material friction 0.40 and restitution 0.95 | Inherited from the [table USD physics layer](../legged_lab/assets/table_tennis/table/configuration/ping_pong_table_urdf_physics.usd). These are authored material inputs. |
 | Analytical tabletop restitution 0.90 and horizontal velocity multiplier 0.70 | Inherited from the [PACE predictor](https://github.com/ohowo/PACE-ICRA2026/blob/859b26b411d442704c7b590a94d54cbfb3ba9bb6/legged_lab/envs/base/tt_env.py#L981-L1022). In the idealized vertical quadratic-drag calculation, 0.90 gives a 227.5 mm rebound from a 300 mm drop. That is a derived comparison, with the actual PhysX rebound pending verification. |
-| Still air, zero initial serve spin, zero Magnus factor, and thin-shell inertia `I/m = 2r²/3` | Model defaults and an analytical geometry assumption. The optional airflow and spin settings accept values supplied by the caller. |
+| Still air, zero initial serve spin, and thin-shell inertia `I/m = 2r²/3` | Model defaults and an analytical geometry assumption. The optional airflow and spin settings accept values supplied by the caller. The task now selects dynamic Magnus; the retained zero fixed factor applies only in constant mode. |
 
 ## Update audit log
+
+### Dynamic Magnus force (2026-11-06)
+
+[Conti et al., arXiv:2606.28805v2](https://arxiv.org/html/2606.28805v2#S3.SS2.SSS2),
+Eq. (5), Tables II-III, supplies the following C_M curves. Units: speed in
+m/s, angular speed w in rad/s, dimensionless C_M; m1 and b multiply w,
+a multiplies w². Source table values are transcribed without a new fit into
+[magnus_model.py](../legged_lab/physics/magnus_model.py).
+
+| Speed | m1 | s | w_break | a | b | c |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2.0 | 0 | 0.08 | 150 | -1.852e-7 | -1.296e-4 | 0.0983 |
+| 3.5 | -1.1e-3 | 0.31 | 200 | -1.667e-7 | -3.333e-5 | 0.1 |
+| 7.5 | -8.0e-4 | 0.37 | 350 | -2.000e-7 | 1.700e-4 | 0.0587 |
+| 10.5 | -6.58e-4 | 0.375 | 440 | -2.604e-7 | 3.646e-4 | -0.0225 |
+| 13.5 | -5.6e-4 | 0.383 | 550 | -3.571e-7 | 5.357e-4 | -0.0893 |
+| 17.0 | -4.48e-4 | 0.371 | 650 | -1.000e-7 | 2.300e-4 | -0.0375 |
+
+At each tabulated speed use `max(0, m1*w + s)` when `w <= w_break`,
+otherwise `max(0, a*w² + b*w + c)`. PACE linearly interpolates the resulting
+C_M values between neighboring speed curves. This is an explicit PACE
+interpolation choice, not a claim to reproduce the authors' software.
+The table uses a reference viscosity of 1.506e-5 m²/s and nominal radius
+0.020 m in the source's Reynolds-number interpretation. PACE uses the listed
+speed nodes directly and does not vary viscosity with temperature.
+
+The source defines `F_M = rho * (4*pi*r³/3) * C_M * (omega x v)`.
+The existing PACE force is `0.5*rho*pi*r³*kappa*(omega x v_rel)`;
+equating them yields `kappa = (8/3)*C_M`. Lookup uses current relative speed
+and spin magnitude. The source's force-averaged segment-speed fit is treated
+as an instantaneous, quasi-steady model in PACE; this transfer is an assumption.
+At 7.5 m/s and 200 rad/s, C_M = 0.21 and kappa = 0.56. For transverse
+spin and current PACE density, the force magnitude is 0.01293079536 N.
+
+Lookup speed clamps to the tabulated 2-17 m/s range. The source describes
+play up to 1000 rad/s; PACE additionally clamps lookup spin at that value
+as an engineering guard, not a new empirical law. The force still uses actual
+vectors, so behavior outside the lookup envelope is not validated. Rounded
+piecewise coefficients can yield jumps at spin breakpoints; these are preserved.
+The fit is for Nittaku Nexcel 40+ balls in the source study, not a universal
+ITTF coefficient or a calibration for the exact PACE ball.
+
+No raw flight dataset was imported, filtered or refitted for this update;
+there is no new project train/test split for this model. Published fits are
+used as a reference. The existing racket dataset and its splits are unchanged.
+
+The task selects `magnus_model="conti2026"`. The old `magnus_factor=0.0`
+is retained for the selectable `"constant"` mode and remains the standalone
+adapter default. The live force is recomputed at every physics substep
+from the current state, and PhysX applies its own time integration. No dt
+factor is applied to force values and no elapsed-time multiplier is fitted.
+Air density 1.225 kg/m³, C_D 0.4378, mass 0.0027 kg, radius 0.020 m,
+initial spin zero, material values, inertia and timing retain their prior
+provenance and values. Aerodynamic torque is still zero.
+
+CPU checks cover published node values, both spin branches, interpolation,
+lookup bounds, units, sign/zero limits, relative airflow, changing-state
+updates with fixed batch size, and the actual environment substep loop
+executed with stand-in physics. Real PhysX contact/flight, high-spin transfer
+and the fit's physical accuracy for PACE remain unverified. The existing
+analytical landing/apex predictor still omits Magnus; enabling the live force
+does not resolve that separate physical-model mismatch.
 
 ### Explicit live ball inertia (2026-11-06)
 
@@ -175,3 +237,4 @@ high-spin flight still need separate validation.
 | 2026-11-04 | Baseline `77e8017`, covering [PR #2](https://github.com/ohowo/PACE-ICRA2026/pull/2), [PR #3](https://github.com/ohowo/PACE-ICRA2026/pull/3), [PR #4](https://github.com/ohowo/PACE-ICRA2026/pull/4) and [PR #5](https://github.com/ohowo/PACE-ICRA2026/pull/5) | Created the register, checked the four dataset blobs at the pinned revision and reran the coefficient fit and test-set evaluation. Recorded the standards, inherited values and remaining validation gaps. This change updates the documentation and maintenance rules. |
 | 2026-11-06 | Table rebound prediction at base `caf7ade` | Reviewed ball, air and contact inputs. No new external data or coefficient fit. Recorded the derived approach-speed formula, inherited rebound factors, CPU checks and remaining approximations. |
 | 2026-11-06 | Live ball inertia at base `5f06748` | Applied the existing thin-shell assumption to the live asset, checked Isaac Lab 2.1.0 spawning/cloning and USD mass-attribute semantics, and recorded derived SI inertia plus CPU/runtime validation limits. Existing physical inputs and their source entries are unchanged. |
+| 2026-11-06 | Dynamic Magnus force at base `3cbce09` | Recorded versioned speed/spin curves, coefficient conversion, interpolation and lookup guards, per-substep updating, CPU evidence and predictor/runtime limitations. Other physical parameters retain their recorded sources and values. |

@@ -6,7 +6,7 @@ import unittest
 import torch
 
 from legged_lab.physics.ball_impact import resolve_ball_impact
-from legged_lab.physics.table_prediction import predict_table_rebound
+from legged_lab.physics.table_prediction import predict_table_rebound, predict_table_rebound_state
 
 
 def vector(values):
@@ -14,6 +14,37 @@ def vector(values):
 
 
 class TablePredictionTest(unittest.TestCase):
+    def test_rebound_state_keeps_contact_angular_impulse(self):
+        # With no initial spin, friction must generate rotation at the table.
+        v, w = vector([[4, 0, -3], [-4, 0, -3]]), vector([[0, 0, 0], [0, 50, 10]])
+        v0, w0 = v.clone(), w.clone()
+        kwargs = dict(radius=0.02, restitution=0.9, friction=0.25,
+                      tangential_restitution=0.2)
+        actual_v, actual_w = predict_table_rebound_state(
+            v, w, vector([0, 0]), drag_k=0.125, gravity=9.81, **kwargs)
+        expected_v, expected_w = resolve_ball_impact(v, w, vector([0, 0, 1]), **kwargs)
+        torch.testing.assert_close(actual_v, expected_v)
+        torch.testing.assert_close(actual_w, expected_w)
+        self.assertGreater(actual_w[0, 1].item(), 0)
+        # Independently check angular momentum about the contact point:
+        # delta omega = (-r*n) x delta v_t / ((2/3)*r^2).
+        arm = vector([[0, 0, -0.02]]).expand_as(v)
+        torch.testing.assert_close(actual_w - w,
+                                   torch.linalg.cross(arm, actual_v - v) / ((2/3)*0.02**2))
+        torch.testing.assert_close(v, v0)
+        torch.testing.assert_close(w, w0)
+
+    def test_legacy_mode_preserves_spin_and_linear_api(self):
+        v = vector([[[4, 0, -3], [-4, 0, -3]]])
+        w = vector([[[0, 50, 0], [0, -50, 20]]])
+        time = vector([[0.1, 0.2]])
+        kwargs = dict(drag_k=0.125, gravity=9.81, radius=0.02)
+        out_v, out_w = predict_table_rebound_state(v, w, time, **kwargs)
+        torch.testing.assert_close(out_v, predict_table_rebound(v, w, time, **kwargs))
+        torch.testing.assert_close(out_w, w)
+        out_w.zero_()
+        self.assertEqual(w[0, 0, 1], 50)  # No output alias into caller state.
+
     def rebound(self, velocity, time, **kwargs):
         return predict_table_rebound(
             velocity, torch.zeros_like(velocity), time,

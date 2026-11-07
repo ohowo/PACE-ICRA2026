@@ -63,6 +63,15 @@ class AeroForceField:
         """Return k = rho * A * Cd / (2 * mass) in inverse meters."""
         return 0.5 * self.env_props["air_density"] * self.a * self._fixed_params["drag_coefficients"] / mass_kg
 
+    @property
+    def magnus_enabled(self) -> bool:
+        """Whether the configured force law can produce Magnus lift."""
+        return self._dynamic_magnus is not None or self._fixed_params["magnus_factors"] != 0.0
+
+    def compute_forces(self, v_w: torch.Tensor, omega_w: torch.Tensor):
+        """Evaluate flight forces without staging forces on a live body."""
+        return self._compute_forces(v_w, omega_w)
+
     def _ensure_buffers(self, batch_size: int):
         """Create constant parameter tensors on the correct device and shape (N,)."""
         # (Re)build only if sizes changed
@@ -89,7 +98,7 @@ class AeroForceField:
         """
         # Flatten leading dims to a (N, 3) batch for the aero model
         shape = v_w.shape[:-1]
-        N = int(torch.tensor(shape).prod().item()) if len(shape) > 1 else shape[0]
+        N = math.prod(shape)
 
         v_flat     = v_w.reshape(N, 3).to(self.device)
         omega_flat = omega_w.reshape(N, 3).to(self.device)

@@ -34,7 +34,8 @@ from legged_lab.utils.env_utils.scene import SceneCfg
 # ! Aerodynamics : BEGIN
 from legged_lab.physics.aerodynamics import AeroForceField
 # ! Aerodynamics : END
-from legged_lab.physics.table_prediction import predict_table_rebound
+from legged_lab.physics.table_prediction import predict_table_rebound_state
+from legged_lab.physics.flight_prediction import predict_flight_apex
 
 #TODO: move this functio to tt_config.py
 @configclass
@@ -982,7 +983,7 @@ class TTEnv(VecEnv):
         k_scalar = torch.tensor(max(1e-8, self.ball_drag_k), device=self.device, dtype=vz.dtype)
 
         table = self.cfg.table
-        rebound = predict_table_rebound(
+        rebound, rebound_spin = predict_table_rebound_state(
             self.ball_linvel,
             self.ball_angvel,
             t1,
@@ -1030,6 +1031,25 @@ class TTEnv(VecEnv):
         xpa = x + dx_after
         ypa = y + dy_after
 
+        apex_valid = torch.ones_like(self.mask_before)
+        if self.aero.magnus_enabled:
+            # Predict both future post-contact ascent and the current ascent.
+            # Use returned contact spin for the former and measured spin for
+            # the latter; spin stays constant during zero-torque free flight.
+            apex, ascent_time, valid = predict_flight_apex(
+                torch.stack((predict_ball_land_vis, self.ball_pos), dim=1),
+                torch.stack((rebound, self.ball_linvel), dim=1),
+                torch.stack((rebound_spin, self.ball_angvel), dim=1),
+                aero=self.aero,
+                mass_kg=self.ball.cfg.spawn.mass_props.mass,
+                gravity=g,
+            )
+            xpb, ypb, zpb = apex[:, 0].unbind(dim=-1)
+            xpa, ypa, zpa = apex[:, 1].unbind(dim=-1)
+            self.t_before = t1 + ascent_time[:, 0]
+            self.t_after = ascent_time[:, 1]
+            apex_valid = torch.where(self.mask_before, valid[:, 0], valid[:, 1])
+
         xpb=torch.clamp(xpb, max=-1.6)
         xpa=torch.clamp(xpa, max=-1.6)
 
@@ -1050,6 +1070,7 @@ class TTEnv(VecEnv):
             | (z < 0.7)
             | ((self.ball_pos[:, 0] < -1.35) & (vz < 0))
             | self.has_touch_paddle
+            | ~apex_valid
         )
         self.mask_terminal = (self.ball_pos[:, 0] > -1.5) | (self.ball_pos[:, 0] < -1.9) | self.has_touch_paddle_rew | (vz < 0.0) | (self.ball_pos[:, 2] < 0.6) 
             #mask_terminal: true-> future,mask_terminal: false->distance

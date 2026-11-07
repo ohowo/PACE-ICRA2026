@@ -5,7 +5,7 @@ import torch
 from legged_lab.physics.ball_impact import resolve_ball_impact
 
 
-def predict_table_rebound(
+def predict_table_rebound_state(
     linear_velocity: torch.Tensor,
     angular_velocity: torch.Tensor,
     time_to_impact: torch.Tensor,
@@ -16,8 +16,8 @@ def predict_table_rebound(
     restitution: float = 0.9,
     friction: float | None = None,
     tangential_restitution: float = 0.0,
-) -> torch.Tensor:
-    """Estimate rebound velocity at a stationary horizontal table in world frame.
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return rebound (linear, angular) velocities in the world frame.
 
     Velocities have shape (..., 3), in m/s and rad/s. time_to_impact has
     shape (...) in seconds and must be nonnegative. drag_k = rho*A*Cd/(2*m)
@@ -26,7 +26,8 @@ def predict_table_rebound(
     Match the analytical predictor's per-axis horizontal drag and ballistic
     vertical motion. The horizontal solution v(t) = v0/(1+k*abs(v0)*t)
     supplies the incident velocity to BOTH rebound modes. With friction=None,
-    retain the inherited horizontal speed multiplier of 0.7. Otherwise use
+    retain the inherited horizontal speed multiplier of 0.7 and preserve
+    incoming spin: that legacy mode has no angular impulse law. Otherwise use
     the spin-aware thin-shell impulse model. The vertical incident velocity
     should be approaching the table for a physical rebound prediction.
 
@@ -40,12 +41,13 @@ def predict_table_rebound(
     vertical_impact = linear_velocity[..., 2] - gravity * time_to_impact
 
     if friction is None:
-        return torch.cat(
+        rebound = torch.cat(
             (0.7 * horizontal_impact, (-restitution * vertical_impact).unsqueeze(-1)), dim=-1
         )
+        return rebound, angular_velocity.clone()
 
     incident = torch.cat((horizontal_impact, vertical_impact.unsqueeze(-1)), dim=-1)
-    rebound, _ = resolve_ball_impact(
+    return resolve_ball_impact(
         incident,
         angular_velocity,
         incident.new_tensor((0.0, 0.0, 1.0)),
@@ -54,4 +56,15 @@ def predict_table_rebound(
         friction=friction,
         tangential_restitution=tangential_restitution,
     )
-    return rebound
+
+
+def predict_table_rebound(
+    linear_velocity: torch.Tensor,
+    angular_velocity: torch.Tensor,
+    time_to_impact: torch.Tensor,
+    **kwargs,
+) -> torch.Tensor:
+    """Compatibility API returning only linear velocity; new callers use state."""
+    return predict_table_rebound_state(
+        linear_velocity, angular_velocity, time_to_impact, **kwargs
+    )[0]

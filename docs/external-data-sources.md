@@ -159,8 +159,9 @@ lookup bounds, units, sign/zero limits, relative airflow, changing-state
 updates with fixed batch size, and the actual environment substep loop
 executed with stand-in physics. Real PhysX contact/flight, high-spin transfer
 and the fit's physical accuracy for PACE remain unverified. The existing
-analytical landing/apex predictor still omits Magnus; enabling the live force
-does not resolve that separate physical-model mismatch.
+analytical approach-to-table predictor still omits Magnus. The subsequent
+rebound-spin update below adds Magnus to ascent prediction, but does not
+resolve that remaining approach-flight mismatch.
 
 ### Explicit live ball inertia (2026-11-06)
 
@@ -232,9 +233,51 @@ scalar readback. The existing ballistic vertical approach and separate-axis
 flight approximation remain. Physical rebound, vector-drag prediction and
 high-spin flight still need separate validation.
 
+### Rebound spin propagation and ascent (2026-11-06)
+
+At base `4d792ed63f83e38a6139cbcdfdb3d0ef83a15fc4`, reviewed
+`table_prediction.py`, `ball_impact.py`, `aerodynamics.py` and the task's
+prediction caller. The state API now retains the existing impulse model's
+angular result rather than discarding it. Its relation
+`delta_omega = (-r*n) cross delta_v_t / ((2/3)*r^2)` follows from angular
+impulse and the previously documented uniform thin-shell inertia. This is
+a derived relation using existing inputs, with no new empirical coefficient.
+The legacy `bounce_friction=None` branch preserves incoming spin while
+keeping the original 0.70 horizontal multiplier; because it has no angular
+impulse law, this is explicitly a compatibility assumption. It does not
+predict friction-generated spin. The optional friction branch does.
+
+`flight_prediction.py` consumes the returned contact spin, or measured spin
+for a ball already in flight, and uses the same force adapter and Conti
+speed/spin curves documented above. It recomputes force at both stages of
+each explicit-midpoint step. Spin stays constant between contacts under the
+existing zero-aerodynamic-torque assumption. Inputs are world-frame meters,
+m/s, rad/s, kg, and gravity in m/s². Numerical settings are a maximum
+0.020 s step and 1.50 s horizon (75 iterations); the apex event is located
+within its crossing step. These are implementation choices, not external
+measurements. Unresolved/nonfinite apex samples are invalid, and the task
+uses its existing fallback. Magnus-disabled ascent retains the old formula.
+
+CPU checks cover angular momentum, unchanged legacy linear outputs, retained
+spin, generated spin, ascent/side-force signs, batch shapes, input ownership,
+invalid/horizon handling, and actual environment prediction routing without
+Isaac imports. An independent RK4 integrator with a 0.0005 s step checks
+representative flight cases to 3 mm position and 1 ms time tolerances under
+the same force law. This checks numerical consistency, not measured flight
+accuracy. Landing before the bounce still uses ballistic vertical motion and
+separate-axis drag without Magnus. Real PhysX contacts, training throughput,
+high-spin regimes and the horizon's coverage remain unverified.
+
+No physical parameter, source dataset, split/filter, external dependency or
+coefficient fit was added or changed. Reviewed radius 0.020 m, mass 0.0027 kg,
+air density 1.225 kg/m³, `Cd=0.4378`, gravity 9.81 m/s², table restitution
+0.90, legacy multiplier 0.70, existing friction settings, thin-shell inertia
+and the dynamic Magnus curves; their recorded source entries remain unchanged.
+
 | Date | Code or change reviewed | Provenance check |
 | --- | --- | --- |
 | 2026-11-04 | Baseline `77e8017`, covering [PR #2](https://github.com/ohowo/PACE-ICRA2026/pull/2), [PR #3](https://github.com/ohowo/PACE-ICRA2026/pull/3), [PR #4](https://github.com/ohowo/PACE-ICRA2026/pull/4) and [PR #5](https://github.com/ohowo/PACE-ICRA2026/pull/5) | Created the register, checked the four dataset blobs at the pinned revision and reran the coefficient fit and test-set evaluation. Recorded the standards, inherited values and remaining validation gaps. This change updates the documentation and maintenance rules. |
 | 2026-11-06 | Table rebound prediction at base `caf7ade` | Reviewed ball, air and contact inputs. No new external data or coefficient fit. Recorded the derived approach-speed formula, inherited rebound factors, CPU checks and remaining approximations. |
 | 2026-11-06 | Live ball inertia at base `5f06748` | Applied the existing thin-shell assumption to the live asset, checked Isaac Lab 2.1.0 spawning/cloning and USD mass-attribute semantics, and recorded derived SI inertia plus CPU/runtime validation limits. Existing physical inputs and their source entries are unchanged. |
 | 2026-11-06 | Dynamic Magnus force at base `3cbce09` | Recorded versioned speed/spin curves, coefficient conversion, interpolation and lookup guards, per-substep updating, CPU evidence and predictor/runtime limitations. Other physical parameters retain their recorded sources and values. |
+| 2026-11-06 | Rebound spin and ascent at base `4d792ed` | Retained post-impact angular velocity and routed it into the existing Magnus law. Recorded legacy spin preservation, derived angular impulse, numerical step/horizon, CPU checks and remaining approach-flight/runtime limits. No new external data or physical parameter changes. |

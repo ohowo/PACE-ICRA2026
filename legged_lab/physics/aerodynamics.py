@@ -8,6 +8,7 @@ from typing import Literal, Optional, Tuple
 from legged_lab.physics.aero_model import (
     MeasuredAeroModel
 )
+from legged_lab.physics.magnus_model import ContiMagnusModel
 
 class AeroForceField:
     """
@@ -28,7 +29,16 @@ class AeroForceField:
         magnus_factor: float = 0.0,
         *,
         air_velocity_w: Optional[Tuple[float, float, float]] = None,
+        magnus_model: Literal["constant", "conti2026"] = "constant",
     ):
+        if magnus_model not in ("constant", "conti2026"):
+            raise ValueError("magnus_model must be 'constant' or 'conti2026'")
+        if magnus_model == "conti2026" and not math.isclose(radius_m, 0.020, rel_tol=1e-6):
+            raise ValueError("conti2026 is calibrated for a nominal 0.020 m radius")
+        # Constant mode preserves the old magnus_factor behavior. Dynamic mode
+        # computes kappa from current speed/spin and does not use magnus_factor.
+        self.magnus_model = magnus_model
+        self._dynamic_magnus = ContiMagnusModel() if magnus_model == "conti2026" else None
         self.device = torch.device(device)
         self.env_props = {"air_density": air_density}
         self.r = radius_m
@@ -88,8 +98,17 @@ class AeroForceField:
             v_flat = v_flat - self._air_velocity_w.to(dtype=v_flat.dtype)
         self._ensure_buffers(N)
 
+        params = self._model_params
+        if self._dynamic_magnus is not None:
+            # Recompute at every call, including when the batch size is unchanged.
+            kappa = self._dynamic_magnus(
+                torch.linalg.vector_norm(v_flat, dim=-1),
+                torch.linalg.vector_norm(omega_flat, dim=-1),
+            )
+            params = {**params, "magnus_factors": kappa}
+
         F_flat, T_flat = self.model.calculate_forces_and_torques(
-            v_flat, omega_flat, self._ball_props, self.env_props, self._model_params
+            v_flat, omega_flat, self._ball_props, self.env_props, params
         )
         return F_flat.reshape(*shape, 3), T_flat.reshape(*shape, 3)
 

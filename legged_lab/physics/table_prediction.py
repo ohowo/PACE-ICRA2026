@@ -22,6 +22,8 @@ def predict_table_rebound_state(
     Velocities have shape (..., 3), in m/s and rad/s. time_to_impact has
     shape (...) in seconds and must be nonnegative. drag_k = rho*A*Cd/(2*m)
     is nonnegative in 1/m, gravity is positive in m/s^2, and radius is in m.
+    If a numerical flight predictor already supplies the incident velocity,
+    pass time_to_impact=0 to apply only the collision, with no second flight.
 
     Match the analytical predictor's per-axis horizontal drag and ballistic
     vertical motion. The horizontal solution v(t) = v0/(1+k*abs(v0)*t)

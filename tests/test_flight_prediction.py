@@ -9,7 +9,7 @@ from unittest.mock import Mock
 import torch
 
 from legged_lab.physics.aerodynamics import AeroForceField
-from legged_lab.physics.flight_prediction import predict_flight_apex
+from legged_lab.physics.flight_prediction import predict_flight_apex, predict_table_contact
 from legged_lab.physics.table_prediction import predict_table_rebound_state
 
 
@@ -105,7 +105,8 @@ class FlightPredictionTest(unittest.TestCase):
         wrapper = ast.parse("def predict(self):\n    pass").body[0]
         wrapper.body = method.body[start:end+1]
         namespace = dict(torch=torch, predict_table_rebound_state=predict_table_rebound_state,
-                         predict_flight_apex=predict_flight_apex)
+                         predict_flight_apex=predict_flight_apex,
+                         predict_table_contact=predict_table_contact)
         exec(compile(ast.fix_missing_locations(ast.Module(body=[wrapper], type_ignores=[])),
                      str(source), "exec"), namespace)
         table = SimpleNamespace(bounce_restitution=0.9, bounce_friction=0.25,

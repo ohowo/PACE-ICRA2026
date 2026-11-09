@@ -201,12 +201,44 @@ for compatibility with existing callers. In the task, select
 Initial serve spin remains zero; Magnus becomes nonzero when contact or
 configuration produces a spin component transverse to relative velocity.
 
-**Scope:** the live force and post-bounce/current-ascent apex prediction use
-the same Magnus law. The approach-to-table landing estimate still omits
-Magnus and uses ballistic vertical motion with separate-axis horizontal
-drag. Therefore the complete predicted trajectory can still disagree with
-live flight. CPU tests verify equations and environment routing with stand-in
-physics; no Isaac Sim/GPU run or real-world validation has been performed.
+**Scope:** with Magnus enabled, live flight, approach-to-table prediction and
+post-bounce/current-ascent prediction use the same drag/Magnus force law.
+CPU tests verify equations and environment routing with stand-in physics;
+contact-model accuracy, real-world flight and training throughput remain
+unverified. No Isaac Sim/GPU run has been performed.
+
+## Approach-to-table prediction
+
+`predict_table_contact` integrates current position and velocity under gravity,
+vector drag and Magnus. It returns the first descending crossing of the
+horizontal ball-center contact plane: position, incident velocity, elapsed
+time and validity. The task uses `0.760 m + radius` as the plane height.
+This is an infinite-plane flight prediction, not a test of table edges or
+net collisions. Spin is held constant under the existing zero-torque law.
+
+The explicit-midpoint solver uses the same maximum 0.020 s step and 1.50 s
+horizon as the ascent predictor. Each step recomputes force twice using the
+current and midpoint velocities. It solves the quadratic position interpolant
+for contact within a step and interpolates incident velocity consistently;
+the returned center height is exactly the contact plane. No per-ball Python
+loop, scalar device readback or extra live force is introduced.
+
+The task passes the numerical incident velocity to the rebound model with
+zero remaining approach time, preventing double application of drag/gravity.
+It then uses the returned linear/angular rebound velocities for ascent.
+At-plane incoming/resting states contact immediately; upward states at the
+plane are followed until they return. Initially below-plane, nonfinite and
+horizon-exhausted states are invalid. `valid_land` exposes this status and
+invalid pre-bounce targets use the existing task fallback. A failed landing
+estimate does not invalidate the independent ascent of an already bounced
+ball. With Magnus disabled, the old analytical flight path remains available.
+
+CPU regression cases compare landing time, position and incident velocity
+with independent 0.0005 s RK4 integration of the same force law, using 1 ms,
+3 mm and 0.005 m/s tolerances. They also cover spin direction, moving air,
+float32/float64 batches, boundary/invalid states and contact-to-rebound-to-apex
+routing through the actual task code. These are numerical checks, not measured
+accuracy bounds for real table-tennis flight.
 
 ## Rebound spin and ascent prediction
 
@@ -267,11 +299,12 @@ The `t1_tt` ball uses the ITTF nominal diameter of 40 mm, mass of 2.7 g,
 and a matte white appearance. The simulation uses quadratic vector drag with
 the existing PACE values of 1.225 kg/m³ for air density and 0.4378 for `Cd`.
 The analytical predictor now gets `k = ρ A Cd / (2m)` from those same inputs
-and the configured ball mass, giving 0.124804 m⁻¹. Its closed-form approach
-estimate still treats the axes separately. The constant `Cd` is a PACE model
+and the configured ball mass, giving 0.124804 m⁻¹. The Magnus-disabled
+closed-form approach treats the axes separately; the enabled predictor uses
+vector drag. The constant `Cd` is a PACE model
 parameter. Experimental drag can depend on speed and spin.
 
-The table predictor now computes the incident horizontal velocity before
+The analytical fallback computes the incident horizontal velocity before
 applying either rebound model. For each horizontal component,
 `v_impact = v_now / (1 + k * abs(v_now) * time_to_impact)`, the closed-form
 solution of `dv/dt = -k * abs(v) * v`. The default rebound retains 70% of
@@ -281,10 +314,11 @@ current velocity, restoring speed lost during the approach to the table.
 
 `predict_table_rebound` uses batched tensor operations with no integration
 loop, new dependencies, or live PhysX impulse. The optional spin-aware branch
-receives the same incident velocity. Vertical approach remains ballistic,
-and this approach estimate still omits vector drag coupling and Magnus lift. This
-correction improves internal consistency without calibrating a new contact
-law or changing the aerodynamic coefficients.
+receives the same incident velocity. In that fallback, vertical approach is
+ballistic and the separate-axis approach omits vector drag coupling. When
+Magnus is enabled, the task instead supplies the numerical contact velocity
+at zero remaining approach time. Neither path recalibrates the contact law
+or aerodynamic coefficients.
 
 ITTF Law 2.1.3 specifies about 230 mm rebound from a 300 mm drop onto the
 playing surface. In the one-dimensional quadratic-drag model above, that

@@ -35,7 +35,7 @@ from legged_lab.utils.env_utils.scene import SceneCfg
 from legged_lab.physics.aerodynamics import AeroForceField
 # ! Aerodynamics : END
 from legged_lab.physics.table_prediction import predict_table_rebound_state
-from legged_lab.physics.flight_prediction import predict_flight_apex
+from legged_lab.physics.flight_prediction import predict_flight_apex, predict_table_contact
 
 #TODO: move this functio to tt_config.py
 @configclass
@@ -978,15 +978,30 @@ class TTEnv(VecEnv):
         sqrtD = torch.sqrt(torch.clamp(D, min=0.0))
         t_land = (vz + sqrtD) / g
         t_land = torch.clamp(t_land, min=0.0)
-        self.valid_before = (D >= 0.0) & self.mask_before
+        self.valid_land = D >= 0.0
+        rebound_input_velocity = self.ball_linvel
+        if self.aero.magnus_enabled:
+            contact_pos, contact_velocity, contact_time, self.valid_land = predict_table_contact(
+                self.ball_pos, self.ball_linvel, self.ball_angvel,
+                table_height=h, aero=self.aero,
+                mass_kg=self.ball.cfg.spawn.mass_props.mass, gravity=g,
+            )
+            # Unresolved crossings must not become invented table contacts.
+            contact_pos = torch.where(self.valid_land.unsqueeze(-1), contact_pos, self.ball_pos)
+            rebound_input_velocity = torch.where(
+                self.valid_land.unsqueeze(-1), contact_velocity, torch.zeros_like(contact_velocity)
+            )
+            t_land = torch.where(self.valid_land, contact_time, torch.zeros_like(contact_time))
+        self.valid_before = self.valid_land & self.mask_before
         t1 = torch.where(self.valid_before, t_land, torch.zeros_like(t_land))
         k_scalar = torch.tensor(max(1e-8, self.ball_drag_k), device=self.device, dtype=vz.dtype)
 
         table = self.cfg.table
         rebound, rebound_spin = predict_table_rebound_state(
-            self.ball_linvel,
+            rebound_input_velocity,
             self.ball_angvel,
-            t1,
+            # Numerical contact velocity already includes approach forces.
+            torch.zeros_like(t1) if self.aero.magnus_enabled else t1,
             drag_k=k_scalar,
             gravity=g,
             radius=self.aero.r,
@@ -996,7 +1011,7 @@ class TTEnv(VecEnv):
         )
         vx_bounce, vy_bounce, vz_dd = rebound.unbind(dim=-1)
 
-        # Drag-adjusted ascent after first bounce
+        # Analytical fallback when Magnus is disabled; overridden below otherwise.
         sqrt_gk = torch.sqrt(torch.clamp(torch.tensor(g, device=self.device, dtype=vz.dtype) * k_scalar, min=1e-12))
         sqrt_kg = torch.sqrt(torch.clamp(k_scalar / torch.tensor(g, device=self.device, dtype=vz.dtype), min=0.0))
         vz_up = torch.clamp(vz_dd, min=0.0)
@@ -1020,6 +1035,10 @@ class TTEnv(VecEnv):
         self.predict_x_land = x + horiz_disp(vx, t_land) # acounts for both landing on our side and the opponent's side of table
         self.predict_y_land = y + horiz_disp(vy, t_land)
         predict_ball_land_vis=torch.stack([self.predict_x_land, self.predict_y_land, torch.ones_like(x)*h], dim=-1)
+        if self.aero.magnus_enabled:
+            self.predict_x_land = contact_pos[:, 0]
+            self.predict_y_land = contact_pos[:, 1]
+            predict_ball_land_vis = contact_pos
 
 
         dx_ascent = horiz_disp(vx_bounce, t2_drag)
@@ -1048,7 +1067,7 @@ class TTEnv(VecEnv):
             xpa, ypa, zpa = apex[:, 1].unbind(dim=-1)
             self.t_before = t1 + ascent_time[:, 0]
             self.t_after = ascent_time[:, 1]
-            apex_valid = torch.where(self.mask_before, valid[:, 0], valid[:, 1])
+            apex_valid = torch.where(self.mask_before, self.valid_land & valid[:, 0], valid[:, 1])
 
         xpb=torch.clamp(xpb, max=-1.6)
         xpa=torch.clamp(xpa, max=-1.6)

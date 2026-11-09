@@ -159,9 +159,9 @@ lookup bounds, units, sign/zero limits, relative airflow, changing-state
 updates with fixed batch size, and the actual environment substep loop
 executed with stand-in physics. Real PhysX contact/flight, high-spin transfer
 and the fit's physical accuracy for PACE remain unverified. The existing
-analytical approach-to-table predictor still omits Magnus. The subsequent
-rebound-spin update below adds Magnus to ascent prediction, but does not
-resolve that remaining approach-flight mismatch.
+analytical approach-to-table predictor omitted Magnus at that revision.
+The subsequent rebound-spin and approach-flight updates below connect
+the same Magnus law to both prediction stages.
 
 ### Explicit live ball inertia (2026-11-06)
 
@@ -229,9 +229,10 @@ CPU regression tests compare horizontal velocities with independent RK4
 integration of the same per-axis drag ODE, exercise zero drag and zero
 flight time, and check the optional spin-aware path, batched shapes and
 non-mutating inputs. The helper has no time-stepping loop or GPU-to-CPU
-scalar readback. The existing ballistic vertical approach and separate-axis
-flight approximation remain. Physical rebound, vector-drag prediction and
-high-spin flight still need separate validation.
+scalar readback. At that revision, the ballistic vertical approach and
+separate-axis flight approximation remained; these are now retained only
+in the Magnus-disabled fallback. Physical rebound and high-spin flight
+still need separate validation.
 
 ### Rebound spin propagation and ascent (2026-11-06)
 
@@ -264,15 +265,72 @@ invalid/horizon handling, and actual environment prediction routing without
 Isaac imports. An independent RK4 integrator with a 0.0005 s step checks
 representative flight cases to 3 mm position and 1 ms time tolerances under
 the same force law. This checks numerical consistency, not measured flight
-accuracy. Landing before the bounce still uses ballistic vertical motion and
-separate-axis drag without Magnus. Real PhysX contacts, training throughput,
-high-spin regimes and the horizon's coverage remain unverified.
+accuracy. At that revision, landing before the bounce still used ballistic
+vertical motion and separate-axis drag without Magnus; the update below
+addresses that mismatch. Real PhysX contacts, training throughput, high-spin
+regimes and the horizon's coverage remain unverified.
 
 No physical parameter, source dataset, split/filter, external dependency or
 coefficient fit was added or changed. Reviewed radius 0.020 m, mass 0.0027 kg,
 air density 1.225 kg/m³, `Cd=0.4378`, gravity 9.81 m/s², table restitution
 0.90, legacy multiplier 0.70, existing friction settings, thin-shell inertia
 and the dynamic Magnus curves; their recorded source entries remain unchanged.
+
+### Magnus-aware approach to the table (2026-11-09)
+
+At base `64787794a862aba3a67f913e6f6db93c18c5a5fd`, reviewed
+`flight_prediction.py`, `table_prediction.py`, the task caller and the
+existing aerodynamic inputs. The Magnus-enabled task now follows the ball
+to the contact-height plane with the same force adapter as live flight:
+
+`dp/dt = v`, `dv/dt = g_vector + (F_D(v-u) + F_M(v-u, omega))/m`.
+
+The existing speed/spin-dependent coefficient is recomputed at both stages
+of each explicit-midpoint step. Spin remains constant under the existing
+zero-torque assumption. The numerical incident velocity is passed to the
+collision helper at zero remaining approach time, so approach drag/gravity
+are not applied twice. Returned rebound spin still feeds ascent prediction.
+
+The maximum step (0.020 s) and horizon (1.50 s) are inherited numerical
+settings, not measured physical parameters. Contact is located inside the
+crossing step from `z(t) = z0 + vz0*t + 0.5*az0*t^2`; the downward root is
+used and velocity is interpolated from the midpoint step. This is a derived
+numerical event calculation with no fitted coefficient. Contact height is
+the existing 0.760 m table height plus ball radius (0.780 m nominal), in the
+task's environment-relative coordinates. The solver assumes an infinite
+horizontal plane and does not resolve net or table-edge collisions.
+
+At-plane incoming/resting states contact at zero time; upward states are
+followed to their return. Below-plane/nonfinite states and unresolved
+crossings are invalid. The task records `valid_land` and rejects invalid
+pre-bounce targets; current post-bounce ascent has independent validity.
+The Magnus-disabled compatibility path keeps the old analytical formulas.
+
+CPU checks cover an exact vacuum solution, incoming/upward/invalid boundary
+states, horizon exhaustion, moving-air consistency, float32/float64 batches,
+spin directions, and the real environment prediction block without Isaac.
+An independent RK4 solver (0.0005 s step) checks representative contact
+positions, velocities and times to tolerances of 0.003 m, 0.005 m/s and
+0.001 s respectively. Existing ascent and collision tests also pass.
+
+For the nominal initial state `(1.35, 0, 1.03) m`, `(-5.75, 0, 1.75) m/s`,
+the new solver gives the following comparisons with fixed world-frame spin:
+
+| Angular velocity (rad/s) | Contact time (s) | Contact X (m) | Contact Y (m) |
+| --- | ---: | ---: | ---: |
+| `(0, 0, 0)` | 0.459824 | -0.928580 | 0.000000 |
+| `(0, -100, 0)` (topspin for this direction) | 0.399668 | -0.667580 | 0.000000 |
+| `(0, 100, 0)` (backspin for this direction) | 0.541103 | -1.261952 | 0.000000 |
+| `(0, 0, 100)` | 0.459824 | -0.918715 | -0.182199 |
+
+These are numerical model outputs, not measured trajectories. Physical
+parameters, source versions, data splits/filters and fits are unchanged:
+radius 0.020 m, mass 0.0027 kg, density 1.225 kg/m³, `Cd=0.4378`, gravity
+9.81 m/s², table restitution 0.90, legacy horizontal multiplier 0.70,
+contact friction settings, thin-shell inertia and Conti speed/spin curves
+retain their existing provenance. No external data or dependency was added.
+Real PhysX agreement, physical accuracy, high-spin/horizon coverage and
+training throughput remain unverified; no GPU simulation was run.
 
 | Date | Code or change reviewed | Provenance check |
 | --- | --- | --- |
@@ -281,3 +339,4 @@ and the dynamic Magnus curves; their recorded source entries remain unchanged.
 | 2026-11-06 | Live ball inertia at base `5f06748` | Applied the existing thin-shell assumption to the live asset, checked Isaac Lab 2.1.0 spawning/cloning and USD mass-attribute semantics, and recorded derived SI inertia plus CPU/runtime validation limits. Existing physical inputs and their source entries are unchanged. |
 | 2026-11-06 | Dynamic Magnus force at base `3cbce09` | Recorded versioned speed/spin curves, coefficient conversion, interpolation and lookup guards, per-substep updating, CPU evidence and predictor/runtime limitations. Other physical parameters retain their recorded sources and values. |
 | 2026-11-06 | Rebound spin and ascent at base `4d792ed` | Retained post-impact angular velocity and routed it into the existing Magnus law. Recorded legacy spin preservation, derived angular impulse, numerical step/horizon, CPU checks and remaining approach-flight/runtime limits. No new external data or physical parameter changes. |
+| 2026-11-09 | Magnus-aware table approach at base `6478779` | Applied the existing force law through contact, retained numerical incident velocity for rebound, recorded contact-event derivation and validity handling, and checked CPU numerical consistency. No new external input, coefficient fit or physical parameter change. |

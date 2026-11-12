@@ -14,7 +14,7 @@ def predict_table_rebound_state(
     gravity: float,
     radius: float,
     restitution: float = 0.9,
-    friction: float | None = None,
+    friction: float = 0.25,
     tangential_restitution: float = 0.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Return rebound (linear, angular) velocities in the world frame.
@@ -27,26 +27,23 @@ def predict_table_rebound_state(
 
     Match the analytical predictor's per-axis horizontal drag and ballistic
     vertical motion. The horizontal solution v(t) = v0/(1+k*abs(v0)*t)
-    supplies the incident velocity to BOTH rebound modes. With friction=None,
-    retain the inherited horizontal speed multiplier of 0.7 and preserve
-    incoming spin: that legacy mode has no angular impulse law. Otherwise use
-    the spin-aware thin-shell impulse model. The vertical incident velocity
-    should be approaching the table for a physical rebound prediction.
+    supplies the incident velocity to the thin-shell impulse model, which
+    always updates both linear and angular velocity. Default friction 0.25
+    is the nominal average of ball 0.10 and table 0.40 material friction.
+    Set friction=0 for a frictionless impulse; None no longer selects the
+    removed fixed-horizontal-multiplier model. Separating/grazing incident
+    states are left unchanged by the collision solver.
 
     This is a batched closed-form approximation, without time-stepping or a
     second live contact impulse. Vector drag coupling and Magnus are omitted.
     """
+    if friction is None:
+        raise ValueError("friction=None is no longer supported; use a nonnegative coefficient (default 0.25)")
     horizontal = linear_velocity[..., :2]
     horizontal_impact = horizontal / (
         1 + drag_k * horizontal.abs() * time_to_impact.unsqueeze(-1)
     )
     vertical_impact = linear_velocity[..., 2] - gravity * time_to_impact
-
-    if friction is None:
-        rebound = torch.cat(
-            (0.7 * horizontal_impact, (-restitution * vertical_impact).unsqueeze(-1)), dim=-1
-        )
-        return rebound, angular_velocity.clone()
 
     incident = torch.cat((horizontal_impact, vertical_impact.unsqueeze(-1)), dim=-1)
     return resolve_ball_impact(

@@ -109,8 +109,15 @@ class FlightPredictionTest(unittest.TestCase):
                          predict_table_contact=predict_table_contact)
         exec(compile(ast.fix_missing_locations(ast.Module(body=[wrapper], type_ignores=[])),
                      str(source), "exec"), namespace)
-        table = SimpleNamespace(bounce_restitution=0.9, bounce_friction=0.25,
-                                bounce_tangential_restitution=0.0)
+        # Execute the actual task defaults, so the integration test catches a
+        # regression back to a disabled/legacy contact model in configuration.
+        config_tree = ast.parse((source.parent / "tt_config.py").read_text())
+        config_class = next(n for n in config_tree.body if isinstance(n, ast.ClassDef)
+                            and n.name == "TableCfg")
+        config_class.decorator_list = []
+        exec(compile(ast.Module(body=[config_class], type_ignores=[]), "TableCfg", "exec"), namespace)
+        table = namespace["TableCfg"]()
+        self.assertEqual(table.bounce_friction, 0.25)
         env = SimpleNamespace(
             aero=self.field(), device="cpu", cfg=SimpleNamespace(table=table),
             ball=SimpleNamespace(cfg=SimpleNamespace(spawn=SimpleNamespace(
@@ -138,22 +145,28 @@ class FlightPredictionTest(unittest.TestCase):
         self.assertGreater(abs(expected[0, 2] - wrong[0, 2]), 0.01)
         self.assertFalse(env.mask_invalid.any())
 
-        # Default legacy contact still passes nonzero incoming spin onward.
-        table.bounce_friction = None
+        # Incoming spin is modified by the same impulse before ascent.
         env.ball_angvel[0, 1] = 70
         namespace["predict"](env)
-        legacy_v, legacy_w = predict_table_rebound_state(
+        contact_v, contact_w = predict_table_rebound_state(
             env.ball_linvel[:1], env.ball_angvel[:1], tensor([0]),
             drag_k=env.ball_drag_k, gravity=9.81, radius=0.02)
-        expected, _, _ = predict_flight_apex(env.ball_pos[:1], legacy_v, legacy_w,
+        self.assertFalse(torch.equal(contact_w, env.ball_angvel[:1]))
+        expected, _, _ = predict_flight_apex(env.ball_pos[:1], contact_v, contact_w,
                                             aero=env.aero, mass_kg=0.0027)
         torch.testing.assert_close(env.pos_pred_before[:1, 1:], expected[:, 1:])
 
         # The Magnus-disabled path keeps its existing closed-form apex.
+        env.ball_pos[0, 0] = -1.1  # Keep the resulting X beyond the task clamp.
         env.aero = self.field(magnus_model="constant", magnus_factor=0)
         namespace["predict_flight_apex"] = Mock(side_effect=AssertionError("unexpected integration"))
         namespace["predict"](env)
         k = env.ball_drag_k
         expected_height = 0.78 + 0.5/k * torch.log1p(tensor(k/9.81 * 2.7**2))
         torch.testing.assert_close(env.pos_pred_before[0, 2], expected_height)
+        expected_time = env.t_before[0]
+        expected_x = env.ball_pos[0, 0] + torch.sign(contact_v[0, 0])/k * torch.log1p(
+            k * contact_v[0, 0].abs() * expected_time)
+        self.assertLess(expected_x, -1.6)
+        torch.testing.assert_close(env.pos_pred_before[0, 0], expected_x.clamp(max=-1.6))
         namespace["predict_flight_apex"].assert_not_called()

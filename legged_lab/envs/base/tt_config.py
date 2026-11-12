@@ -11,7 +11,6 @@
 
 import math
 from dataclasses import MISSING
-from typing import Optional
 
 from isaaclab.assets.articulation import ArticulationCfg
 from isaaclab.assets.rigid_object import RigidObjectCfg
@@ -91,8 +90,9 @@ class TableCfg:
     table_own_contact_x: tuple = (-1.37, 0.0)
     table_own_contact_y: tuple = (-0.7625, 0.7625)
     table_own_contact_z: tuple = (0.70, 0.85)
-    # Set bounce_friction to use the spin-aware rebound in the analytical predictor.
-    bounce_friction: Optional[float] = None
+    # Thin-shell impulse in both flight-prediction paths. Nominal material-pair
+    # friction: average of ball 0.10 and table 0.40; not a new measured fit.
+    bounce_friction: float = 0.25
     bounce_restitution: float = 0.9
     bounce_tangential_restitution: float = 0.0
 

@@ -95,7 +95,8 @@ PACE stores the derived coefficients and links.
 | Active PACE air density 1.225 kg/m³ and drag coefficient 0.4378 | Inherited from the upstream [PACE training environment](https://github.com/ohowo/PACE-ICRA2026/blob/859b26b411d442704c7b590a94d54cbfb3ba9bb6/legged_lab/envs/base/tt_env.py#L205-L213). The upstream comment describes real-world testing. A source dataset or fit record for 0.4378 was unavailable in the reviewed branch. |
 | Analytical drag constant 0.1248038406 m⁻¹ | Derived in [the force adapter](../legged_lab/physics/aerodynamics.py) as `rho * pi * r**2 * Cd / (2 * mass)`. Uses the values above and the ITTF nominal ball. The CPU test checks the constant against the force. [Conti et al., arXiv:2606.28805v2](https://arxiv.org/abs/2606.28805v2) provides context on speed and spin dependence, without supplying a coefficient to PACE. |
 | Table material friction 0.40 and restitution 0.95 | Inherited from the [table USD physics layer](../legged_lab/assets/table_tennis/table/configuration/ping_pong_table_urdf_physics.usd). These are authored material inputs. |
-| Analytical tabletop restitution 0.90 and horizontal velocity multiplier 0.70 | Inherited from the [PACE predictor](https://github.com/ohowo/PACE-ICRA2026/blob/859b26b411d442704c7b590a94d54cbfb3ba9bb6/legged_lab/envs/base/tt_env.py#L981-L1022). In the idealized vertical quadratic-drag calculation, 0.90 gives a 227.5 mm rebound from a 300 mm drop. That is a derived comparison, with the actual PhysX rebound pending verification. |
+| Predictor tabletop restitution 0.90; historical horizontal multiplier 0.70 | Inherited from the [PACE predictor](https://github.com/ohowo/PACE-ICRA2026/blob/859b26b411d442704c7b590a94d54cbfb3ba9bb6/legged_lab/envs/base/tt_env.py#L981-L1022). The 0.70 multiplier was removed from prediction on 2026-11-12. In the idealized vertical quadratic-drag calculation, 0.90 gives a 227.5 mm rebound from a 300 mm drop. That is a derived comparison, with the actual PhysX rebound pending verification. |
+| Predictor table friction 0.25 and tangential restitution 0.0 | Since 2026-11-12, all table rebound predictions use the thin-shell impulse. Friction is derived from existing ball/table material values `(0.10+0.40)/2`; it is not a measured fit. Tangential restitution 0.0 retains the existing rigid-contact approximation. See the dated audit below. |
 | Still air, zero initial serve spin, and thin-shell inertia `I/m = 2r²/3` | Model defaults and an analytical geometry assumption. The optional airflow and spin settings accept values supplied by the caller. The task now selects dynamic Magnus; the retained zero fixed factor applies only in constant mode. |
 
 ## Update audit log
@@ -243,10 +244,11 @@ angular result rather than discarding it. Its relation
 `delta_omega = (-r*n) cross delta_v_t / ((2/3)*r^2)` follows from angular
 impulse and the previously documented uniform thin-shell inertia. This is
 a derived relation using existing inputs, with no new empirical coefficient.
-The legacy `bounce_friction=None` branch preserves incoming spin while
-keeping the original 0.70 horizontal multiplier; because it has no angular
+At that revision, the legacy `bounce_friction=None` branch preserved incoming spin while
+keeping the original 0.70 horizontal multiplier; because it had no angular
 impulse law, this is explicitly a compatibility assumption. It does not
-predict friction-generated spin. The optional friction branch does.
+predict friction-generated spin. The 2026-11-12 update removes that branch
+and uses the friction impulse model for all rebound predictions.
 
 `flight_prediction.py` consumes the returned contact spin, or measured spin
 for a ball already in flight, and uses the same force adapter and Conti
@@ -332,6 +334,58 @@ retain their existing provenance. No external data or dependency was added.
 Real PhysX agreement, physical accuracy, high-spin/horizon coverage and
 training throughput remain unverified; no GPU simulation was run.
 
+### Unified thin-shell rebound prediction (2026-11-12)
+
+At base `d6b3523990352de90668dd414f881f35e40dbc1d`, reviewed the
+`TableCfg` defaults, `table_prediction.py`, `ball_impact.py`, both flight
+prediction paths, and the sources of their contact parameters. All table
+rebound predictions now call the existing thin-shell impulse solver; the
+fixed 0.70 horizontal multiplier and unchanged-spin branch are removed.
+The linear-only public API also uses the same impulse model. An explicit
+`friction=None` override is rejected; users must remove it or supply a
+nonnegative coefficient. Zero means frictionless impulse, not the old model.
+
+The new default in `TableCfg.bounce_friction` and
+`predict_table_rebound_state(..., friction=...)` is dimensionless **0.25**.
+It is derived as `(0.10 + 0.40)/2` from these existing material inputs:
+
+- [Ball material at the reviewed revision](https://github.com/ohowo/PACE-ICRA2026/blob/d6b3523990352de90668dd414f881f35e40dbc1d/legged_lab/assets/table_tennis/ball.py),
+  static/dynamic friction 0.10.
+- [Table physics layer at the reviewed revision](https://github.com/ohowo/PACE-ICRA2026/blob/d6b3523990352de90668dd414f881f35e40dbc1d/legged_lab/assets/table_tennis/table/configuration/ping_pong_table_urdf_physics.usd),
+  static/dynamic friction 0.40, blob `d40c49ef23d93a3727e92abb00165ea2413e237e`.
+- The [PhysX material combination rule](https://docs.omniverse.nvidia.com/kit/docs/omni_physics/latest/dev_guide/rigid_bodies_articulations/rigid_bodies.html#configure-rigid-body-material-combine-modes)
+  uses the average by default, as recorded in the previous source review.
+
+This is a nominal material-consistency choice, not a newly calibrated ball-table
+friction coefficient. No dataset, split/filter or fit was introduced. Normal
+restitution remains 0.90, tangential restitution remains 0.0, and the existing
+thin-shell inertia `I/m=(2/3)*r^2` yields the tangential effective-mass factor
+`1/(1+r^2/(I/m))=2/5`. The solver's existing Coulomb cap and angular impulse
+couple outgoing linear and angular velocities. No new collision time-step
+loop, dependency or live PhysX impulse is introduced.
+
+For incident `v=(4,0,-3) m/s`, `omega=(0,0,0) rad/s`, the defaults give
+`v_out=(2.575,0,2.7) m/s`, `omega_out=(0,106.875,0) rad/s`.
+The normal impulse per unit mass is 5.7 m/s, and the tangential impulse
+magnitude per unit mass is `min(0.4*4, 0.25*5.7)=1.425 m/s`.
+This is an analytical check, not a measured impact.
+
+CPU regressions verify default spin generation, the Coulomb limit, pure
+rolling, spin-to-translation transfer with nonincreasing total kinetic energy,
+angular momentum, separating/grazing states, frictionless limits, input
+ownership and the API migration error. The actual `TableCfg` defaults and
+task prediction block are executed with CPU stand-ins: the returned spin
+feeds Magnus ascent, while Magnus-disabled flight uses the same collision
+law with its existing analytical propagation. Existing flight/inertia tests
+remain part of the checks.
+
+Live ball/table/paddle material values, geometry, inertia, all aerodynamic
+inputs and their provenance are unchanged. Live ball-table nominal
+restitution is still `(0.90+0.95)/2=0.925`, distinct from the predictor's
+retained 0.90; this update does not calibrate or unify PhysX contact response.
+Physical accuracy, high-spin transfer and training throughput remain
+unverified, and no Isaac Sim/Lab GPU simulation was run.
+
 | Date | Code or change reviewed | Provenance check |
 | --- | --- | --- |
 | 2026-11-04 | Baseline `77e8017`, covering [PR #2](https://github.com/ohowo/PACE-ICRA2026/pull/2), [PR #3](https://github.com/ohowo/PACE-ICRA2026/pull/3), [PR #4](https://github.com/ohowo/PACE-ICRA2026/pull/4) and [PR #5](https://github.com/ohowo/PACE-ICRA2026/pull/5) | Created the register, checked the four dataset blobs at the pinned revision and reran the coefficient fit and test-set evaluation. Recorded the standards, inherited values and remaining validation gaps. This change updates the documentation and maintenance rules. |
@@ -340,3 +394,4 @@ training throughput remain unverified; no GPU simulation was run.
 | 2026-11-06 | Dynamic Magnus force at base `3cbce09` | Recorded versioned speed/spin curves, coefficient conversion, interpolation and lookup guards, per-substep updating, CPU evidence and predictor/runtime limitations. Other physical parameters retain their recorded sources and values. |
 | 2026-11-06 | Rebound spin and ascent at base `4d792ed` | Retained post-impact angular velocity and routed it into the existing Magnus law. Recorded legacy spin preservation, derived angular impulse, numerical step/horizon, CPU checks and remaining approach-flight/runtime limits. No new external data or physical parameter changes. |
 | 2026-11-09 | Magnus-aware table approach at base `6478779` | Applied the existing force law through contact, retained numerical incident velocity for rebound, recorded contact-event derivation and validity handling, and checked CPU numerical consistency. No new external input, coefficient fit or physical parameter change. |
+| 2026-11-12 | Unified thin-shell rebound at base `d6b3523` | Removed fixed horizontal retention and made the existing impulse law universal for prediction. Derived default friction 0.25 from pinned material inputs; retained restitution/inertia and recorded migration, CPU checks and the remaining PhysX mismatch. No new experimental data or fit. |

@@ -142,7 +142,8 @@ class TableContactTest(unittest.TestCase):
                      str(source), "exec"), namespace)
         env = SimpleNamespace(
             aero=self.field(), device="cpu",
-            cfg=SimpleNamespace(table=SimpleNamespace(bounce_restitution=0.9,
+            cfg=SimpleNamespace(table=SimpleNamespace(bounce_restitution=0.98,
+                                bounce_restitution_speed_slope=0.02,
                                 bounce_friction=0.25, bounce_tangential_restitution=0)),
             ball=SimpleNamespace(cfg=SimpleNamespace(spawn=SimpleNamespace(
                 mass_props=SimpleNamespace(mass=0.0027)))),
@@ -164,6 +165,10 @@ class TableContactTest(unittest.TestCase):
         rebound, spin = predict_table_rebound_state(
             incident[:2], env.ball_angvel[:2], tensor([0, 0]), drag_k=0,
             gravity=9.81, radius=0.02, friction=0.25)
+        # Use the Magnus/drag-evolved incident speed, not the upward launch vz.
+        approach_speed = -incident[:2, 2]
+        torch.testing.assert_close(rebound[:, 2],
+                                   (0.98 - 0.02*approach_speed)*approach_speed)
         apex, ascent_time, apex_valid = predict_flight_apex(
             p[:2], rebound, spin, aero=env.aero, mass_kg=0.0027)
         self.assertTrue(apex_valid.all())

@@ -13,7 +13,8 @@ def predict_table_rebound_state(
     drag_k: float | torch.Tensor,
     gravity: float,
     radius: float,
-    restitution: float = 0.9,
+    restitution: float = 0.98,
+    restitution_speed_slope: float = 0.02,
     friction: float = 0.25,
     tangential_restitution: float = 0.0,
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -34,6 +35,12 @@ def predict_table_rebound_state(
     removed fixed-horizontal-multiplier model. Separating/grazing incident
     states are left unchanged by the collision solver.
 
+    Normal restitution is evaluated from the INCIDENT normal approach speed:
+    e_n = clamp(restitution - restitution_speed_slope*u_n, 0, 1).
+    Defaults 0.98 and 0.02 s/m use the Conti et al. v2 base contact model;
+    see docs/external-data-sources.md for scope and calibration limitations.
+    Set restitution_speed_slope=0 with restitution=<constant> for old fits.
+
     This is a batched closed-form approximation, without time-stepping or a
     second live contact impulse. Vector drag coupling and Magnus are omitted.
     """
@@ -52,6 +59,7 @@ def predict_table_rebound_state(
         incident.new_tensor((0.0, 0.0, 1.0)),
         radius=radius,
         restitution=restitution,
+        restitution_speed_slope=restitution_speed_slope,
         friction=friction,
         tangential_restitution=tangential_restitution,
     )

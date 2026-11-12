@@ -93,7 +93,10 @@ class TableCfg:
     # Thin-shell impulse in both flight-prediction paths. Nominal material-pair
     # friction: average of ball 0.10 and table 0.40; not a new measured fit.
     bounce_friction: float = 0.25
-    bounce_restitution: float = 0.9
+    # Prediction: e_n = clip(e0 - c*u_n, 0, 1), evaluated at table contact.
+    # Conti et al., arXiv:2606.28805v2 III-C; not calibrated to this PACE table.
+    bounce_restitution: float = 0.98  # Dimensionless zero-speed intercept e0.
+    bounce_restitution_speed_slope: float = 0.02  # c in s/m; 0 restores a constant.
     bounce_tangential_restitution: float = 0.0
 
 @configclass

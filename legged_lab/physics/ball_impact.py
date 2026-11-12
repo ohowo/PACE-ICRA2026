@@ -14,6 +14,7 @@ def resolve_ball_impact(
     radius: float,
     restitution: float,
     friction: float,
+    restitution_speed_slope: float = 0.0,
     tangential_restitution: float = 0.0,
     surface_velocity: Optional[torch.Tensor] = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -31,6 +32,11 @@ def resolve_ball_impact(
     Friction caps the tangential impulse at mu times the normal impulse.
     This instantaneous model assumes the caller has located the contact.
     Separating and grazing contacts leave both velocities unchanged.
+
+    restitution is the zero-speed intercept e0. With speed slope c (s/m),
+    e_n = clamp(e0 - c*u_n, 0, 1), where u_n is the relative normal approach
+    speed at this contact. The default c=0 preserves constant-coefficient
+    callers, including racket experiments. Table prediction supplies c=0.02.
     """
     if not math.isfinite(radius) or radius <= 0:
         raise ValueError("radius must be positive and finite")
@@ -38,12 +44,16 @@ def resolve_ball_impact(
         raise ValueError("friction must be nonnegative and finite")
     if not (0 <= restitution <= 1 and 0 <= tangential_restitution <= 1):
         raise ValueError("normal and tangential restitution must be in [0, 1]")
+    if not math.isfinite(restitution_speed_slope) or restitution_speed_slope < 0:
+        raise ValueError("restitution_speed_slope must be nonnegative and finite")
 
     normal = normal.expand_as(linear_velocity)
     contact_arm = -radius * normal
     relative_velocity = linear_velocity if surface_velocity is None else linear_velocity - surface_velocity
     normal_speed = (relative_velocity * normal).sum(dim=-1, keepdim=True)
-    normal_delta_v = -(1 + restitution) * normal_speed.clamp(max=0)
+    approach_speed = -normal_speed.clamp(max=0)
+    normal_restitution = (restitution - restitution_speed_slope * approach_speed).clamp(0, 1)
+    normal_delta_v = (1 + normal_restitution) * approach_speed
 
     slip = relative_velocity - normal_speed * normal + torch.linalg.cross(angular_velocity, contact_arm)
     slip_speed = torch.linalg.vector_norm(slip, dim=-1, keepdim=True)

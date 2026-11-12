@@ -34,14 +34,14 @@ class TablePredictionTest(unittest.TestCase):
         torch.testing.assert_close(v, v0)
         torch.testing.assert_close(w, w0)
 
-    def test_legacy_mode_preserves_spin_and_linear_api(self):
+    def test_linear_api_matches_state_and_outputs_do_not_alias_inputs(self):
         v = vector([[[4, 0, -3], [-4, 0, -3]]])
         w = vector([[[0, 50, 0], [0, -50, 20]]])
         time = vector([[0.1, 0.2]])
         kwargs = dict(drag_k=0.125, gravity=9.81, radius=0.02)
         out_v, out_w = predict_table_rebound_state(v, w, time, **kwargs)
         torch.testing.assert_close(out_v, predict_table_rebound(v, w, time, **kwargs))
-        torch.testing.assert_close(out_w, w)
+        self.assertFalse(torch.equal(out_w, w))
         out_w.zero_()
         self.assertEqual(w[0, 0, 1], 50)  # No output alias into caller state.
 
@@ -52,10 +52,14 @@ class TablePredictionTest(unittest.TestCase):
         )
 
     def test_default_rebound_uses_contact_velocity(self):
-        # Current nominal serve. Regression for using 0.7 * launch vx (-4.025).
+        # Current nominal serve, using the analytically propagated incident
+        # speed and Coulomb-limited friction rather than a fixed multiplier.
         time = (1.75 + math.sqrt(1.75**2 + 2 * 9.81 * (1.03 - 0.78))) / 9.81
         rebound = self.rebound(vector([[-5.75, 0, 1.75]]), vector([time]))
-        self.assertAlmostEqual(rebound[0, 0].item(), -3.0161089900, places=8)
+        incident_x = -5.75 / (1 + 0.1248038406 * 5.75 * time)
+        normal_speed = math.sqrt(1.75**2 + 2 * 9.81 * (1.03 - 0.78))
+        self.assertGreater(0.4 * abs(incident_x), 0.25 * 1.9 * normal_speed)
+        self.assertAlmostEqual(rebound[0, 0].item(), incident_x + 0.25 * 1.9 * normal_speed, places=10)
         # Ballistic normal speed from the vertical energy balance.
         expected_vz = 0.9 * math.sqrt(1.75**2 + 2 * 9.81 * (1.03 - 0.78))
         self.assertAlmostEqual(rebound[0, 2].item(), expected_vz, places=10)
@@ -75,15 +79,15 @@ class TablePredictionTest(unittest.TestCase):
             c = derivative(incident_xy + dt * b / 2)
             d = derivative(incident_xy + dt * c)
             incident_xy += dt * (a + 2*b + 2*c + d) / 6
-        rebound = self.rebound(initial, vector([time] * 3), drag_k=k)
-        torch.testing.assert_close(rebound[:, :2], 0.7 * incident_xy, rtol=1e-10, atol=1e-10)
+        rebound = self.rebound(initial, vector([time] * 3), drag_k=k, friction=0)
+        torch.testing.assert_close(rebound[:, :2], incident_xy, rtol=1e-10, atol=1e-10)
 
     def test_zero_drag_or_zero_time_preserves_limiting_solution(self):
         initial = vector([[4, -2, -3], [0, 0, -1]])
-        at_contact = self.rebound(initial, vector([0, 0]))
-        torch.testing.assert_close(at_contact, vector([[2.8, -1.4, 2.7], [0, 0, 0.9]]))
-        no_drag = self.rebound(initial, vector([0.2, 0.4]), drag_k=0.0, restitution=0.8)
-        torch.testing.assert_close(no_drag, vector([[2.8, -1.4, 3.9696], [0, 0, 3.9392]]))
+        at_contact = self.rebound(initial, vector([0, 0]), friction=0)
+        torch.testing.assert_close(at_contact, vector([[4, -2, 2.7], [0, 0, 0.9]]))
+        no_drag = self.rebound(initial, vector([0.2, 0.4]), drag_k=0.0, restitution=0.8, friction=0)
+        torch.testing.assert_close(no_drag, vector([[4, -2, 3.9696], [0, 0, 3.9392]]))
 
     def test_spin_mode_receives_the_same_incident_velocity(self):
         # In one second at k=0.25, |vx| 4 -> 2 and |vy| 2 -> 4/3.
@@ -107,3 +111,36 @@ class TablePredictionTest(unittest.TestCase):
         self.assertEqual(out.shape, initial.shape)
         torch.testing.assert_close(initial, before)
         self.assertTrue(torch.all(out.square().sum(-1) <= initial.square().sum(-1)))
+
+    def test_default_impulse_generates_spin_and_respects_friction_limit(self):
+        # qn=1.9*3=5.7 m/s; |qt|=min(0.4*4, 0.25*5.7)=1.425 m/s.
+        velocity, spin = predict_table_rebound_state(
+            vector([[4, 0, -3]]), vector([[0, 0, 0]]), vector([0]),
+            drag_k=0, gravity=9.81, radius=0.02)
+        torch.testing.assert_close(velocity, vector([[2.575, 0, 2.7]]))
+        torch.testing.assert_close(spin, vector([[0, 106.875, 0]]))
+
+    def test_default_impulse_handles_rolling_and_spin_to_translation(self):
+        v = vector([[2, 0, -3], [2, 0, -3], [2, 0, -3]])
+        w = vector([[0, 100, 30], [0, 300, 30], [0, -100, 30]])
+        out_v, out_w = predict_table_rebound_state(
+            v, w, vector([0, 0, 0]), drag_k=0, gravity=9.81, radius=0.02)
+        torch.testing.assert_close(out_v[:, 0], vector([2, 3.425, 0.575]))
+        torch.testing.assert_close(out_w[:, 1], vector([100, 193.125, 6.875]))
+        torch.testing.assert_close(out_w[:, 2], w[:, 2])
+        # Check total kinetic energy, including rotation, when spin increases vx.
+        inertia_per_mass = (2/3)*0.02**2
+        before = v.square().sum(-1) + inertia_per_mass*w.square().sum(-1)
+        after = out_v.square().sum(-1) + inertia_per_mass*out_w.square().sum(-1)
+        self.assertTrue(torch.all(after <= before))
+
+    def test_separating_and_grazing_states_do_not_rebound_again(self):
+        v, w = vector([[3, 0, 1], [3, 0, 0]]), vector([[0, -100, 0]]*2)
+        out_v, out_w = predict_table_rebound_state(
+            v, w, vector([0, 0]), drag_k=0, gravity=9.81, radius=0.02)
+        torch.testing.assert_close(out_v, v)
+        torch.testing.assert_close(out_w, w)
+
+    def test_removed_none_mode_is_rejected_with_migration_message(self):
+        with self.assertRaisesRegex(ValueError, "friction=None.*nonnegative"):
+            self.rebound(vector([[4, 0, -3]]), vector([0]), friction=None)

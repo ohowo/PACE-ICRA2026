@@ -1006,6 +1006,7 @@ class TTEnv(VecEnv):
             gravity=g,
             radius=self.aero.r,
             restitution=table.bounce_restitution,
+            restitution_speed_slope=table.bounce_restitution_speed_slope,
             friction=table.bounce_friction,
             tangential_restitution=table.bounce_tangential_restitution,
         )

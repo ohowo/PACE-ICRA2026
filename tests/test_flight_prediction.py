@@ -118,6 +118,8 @@ class FlightPredictionTest(unittest.TestCase):
         exec(compile(ast.Module(body=[config_class], type_ignores=[]), "TableCfg", "exec"), namespace)
         table = namespace["TableCfg"]()
         self.assertEqual(table.bounce_friction, 0.25)
+        self.assertEqual(table.bounce_restitution, 0.98)
+        self.assertEqual(table.bounce_restitution_speed_slope, 0.02)
         env = SimpleNamespace(
             aero=self.field(), device="cpu", cfg=SimpleNamespace(table=table),
             ball=SimpleNamespace(cfg=SimpleNamespace(spawn=SimpleNamespace(
@@ -162,7 +164,7 @@ class FlightPredictionTest(unittest.TestCase):
         namespace["predict_flight_apex"] = Mock(side_effect=AssertionError("unexpected integration"))
         namespace["predict"](env)
         k = env.ball_drag_k
-        expected_height = 0.78 + 0.5/k * torch.log1p(tensor(k/9.81 * 2.7**2))
+        expected_height = 0.78 + 0.5/k * torch.log1p(tensor(k/9.81 * 2.76**2))
         torch.testing.assert_close(env.pos_pred_before[0, 2], expected_height)
         expected_time = env.t_before[0]
         expected_x = env.ball_pos[0, 0] + torch.sign(contact_v[0, 0])/k * torch.log1p(

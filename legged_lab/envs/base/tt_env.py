@@ -21,7 +21,7 @@ from isaaclab.envs.mdp.commands import UniformVelocityCommand, UniformVelocityCo
 from isaaclab.managers import EventManager, RewardManager, CurriculumManager
 from isaaclab.managers.scene_entity_cfg import SceneEntityCfg
 from isaaclab.scene import InteractiveScene
-from isaaclab.sensors import ContactSensor, RayCaster
+from isaaclab.sensors import ContactSensor, ContactSensorCfg, RayCaster
 from isaaclab.sim import PhysxCfg, SimulationContext
 from isaaclab.utils.buffers import CircularBuffer, DelayBuffer
 from isaaclab.utils import configclass
@@ -36,17 +36,25 @@ from legged_lab.physics.aerodynamics import AeroForceField
 # ! Aerodynamics : END
 from legged_lab.physics.table_prediction import predict_table_rebound_state
 from legged_lab.physics.flight_prediction import predict_flight_apex, predict_table_contact
+from legged_lab.physics.live_table_impact import LiveTableImpact
 
 #TODO: move this functio to tt_config.py
 @configclass
 class TTSceneCfg(SceneCfg):
-    def __init__(self, config: BaseSceneCfg, physics_dt, step_dt):
+    def __init__(self, config: BaseSceneCfg, physics_dt, step_dt, live_table_impact_enabled=False):
         super().__init__(config, physics_dt, step_dt)
         self.table: RigidObjectCfg = config.table
         self.table.prim_path = "{ENV_REGEX_NS}/Table"
 
         self.ball: RigidObjectCfg = config.ball
         self.ball.prim_path = "{ENV_REGEX_NS}/Ball"
+        if live_table_impact_enabled:
+            self.ball.spawn.activate_contact_sensors = True
+            self.ball_table_contact = ContactSensorCfg(
+                prim_path="{ENV_REGEX_NS}/Ball", update_period=physics_dt,
+                history_length=0, track_air_time=False,
+                filter_prim_paths_expr=["{ENV_REGEX_NS}/Table/base_link"],
+            )
 
         # visualization object for predicted ball pose
         self.ball_future: RigidObjectCfg = RigidObjectCfg(
@@ -174,7 +182,10 @@ class TTEnv(VecEnv):
         )
         self.sim = SimulationContext(sim_cfg)
 
-        scene_cfg = TTSceneCfg(config=cfg.scene, physics_dt=self.physics_dt, step_dt=self.step_dt)
+        scene_cfg = TTSceneCfg(
+            config=cfg.scene, physics_dt=self.physics_dt, step_dt=self.step_dt,
+            live_table_impact_enabled=cfg.table.live_impact_enabled,
+        )
         self.scene = InteractiveScene(scene_cfg)
         self.sim.reset()
 
@@ -216,6 +227,14 @@ class TTEnv(VecEnv):
             magnus_model=self.cfg.ball.magnus_model,
         )
         # ! Aerodynamics Init : am
+
+        self.live_table_impact = None
+        if self.cfg.table.live_impact_enabled:
+            self.live_table_impact = LiveTableImpact(
+                self.ball, self.table, self.scene.sensors["ball_table_contact"],
+                self.aero, self.cfg.table, self.physics_dt,
+                sim_cfg.physx.bounce_threshold_velocity, sim_cfg.gravity,
+            )
 
         self.init_buffers()
 
@@ -738,10 +757,14 @@ class TTEnv(VecEnv):
             # Read current velocity/spin and recompute forces every physics substep.
             # PhysX integrates forces over physics_dt; do not multiply them by dt here.
             self.aero.apply_to_rigid_object(self.ball)
+            if self.live_table_impact is not None:
+                self.live_table_impact.prepare()
             # ! Aerodynamics: Step : END
             self.scene.write_data_to_sim()
             self.sim.step(render=False)
             self.scene.update(dt=self.physics_dt)
+            if self.live_table_impact is not None:
+                self.live_table_impact.apply()
             self.compute_perception()
             self.compute_paddle_touch()
 
@@ -973,7 +996,7 @@ class TTEnv(VecEnv):
         self.mask_before = (has_bounced == 0).squeeze(-1)
         self.mask_after = (has_bounced == 1).squeeze(-1)
 
-        h = 0.76 + self.aero.r  # Center height at contact with the table top.
+        h = self.cfg.table.surface_height + self.aero.r  # Ball center at contact.
         D = vz.pow(2) + 2.0 * g * (z - h)
         sqrtD = torch.sqrt(torch.clamp(D, min=0.0))
         t_land = (vz + sqrtD) / g

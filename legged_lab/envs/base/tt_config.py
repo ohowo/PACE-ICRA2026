@@ -84,6 +84,8 @@ class BallCfg:
 
 @configclass
 class TableCfg:
+    surface_height: float = 0.76  # m, nominal tabletop plane in the table frame.
+    live_impact_enabled: bool = True
     table_opponent_contact_x: tuple = (0.0, 1.37)
     table_opponent_contact_y: tuple = (-0.7625, 0.7625)
     table_opponent_contact_z: tuple = (0.70, 0.85) # table height - ball radius + margin
@@ -93,7 +95,7 @@ class TableCfg:
     # Thin-shell impulse in both flight-prediction paths. Nominal material-pair
     # friction: average of ball 0.10 and table 0.40; not a new measured fit.
     bounce_friction: float = 0.25
-    # Prediction: e_n = clip(e0 - c*u_n, 0, 1), evaluated at table contact.
+    # Shared live tabletop/prediction law: e_n = clip(e0 - c*u_n, 0, 1).
     # Conti et al., arXiv:2606.28805v2 III-C; not calibrated to this PACE table.
     bounce_restitution: float = 0.98  # Dimensionless zero-speed intercept e0.
     bounce_restitution_speed_slope: float = 0.02  # c in s/m; 0 restores a constant.

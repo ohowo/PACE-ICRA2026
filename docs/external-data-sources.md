@@ -436,6 +436,80 @@ A second live impulse is not added. GPU integration, physical calibration and
 training throughput have not been tested. The linear law's high-speed
 extrapolation is not experimentally established by this change.
 
+### Live speed-dependent tabletop response (2026-11-13)
+
+Reviewed base `778700cd4b2aae9d93bb42bd00eb6d833b896e64` (merged PR #13).
+The new `physics/live_table_impact.py` adapter uses the existing thin-shell
+solver and its e0=0.98, c=0.02 s/m, friction=0.25 and e_t=0 defaults for
+eligible live tabletop contacts. These coefficients retain their 2026-11-12
+sources and calibration limitations. No experimental dataset, split/filter,
+new fitted coefficient, dependency or upstream asset edit was introduced.
+
+The added equation `v_minus_z = v_native_z - F_table_z*dt/m` is derived from
+normal momentum balance. It removes the native normal contact impulse before
+calling the shared impact law. Force is measured on the ball in N and dt is
+the current physics substep in seconds. The result replaces native ball
+velocities; it is not another impulse added to them. Tangential input uses
+the existing staged aero force integrated over one substep; spin comes from
+the pre-step state. Native positions and orientations are retained.
+
+API and asset sources inspected on 2026-11-13:
+
+- [Isaac Lab v2.1.0 ContactSensorData](https://github.com/isaac-sim/IsaacLab/blob/v2.1.0/source/isaaclab/isaaclab/sensors/contact_sensor/contact_sensor_data.py):
+  sensor quantities are normal forces, not total forces including friction.
+- [ContactSensor implementation](https://github.com/isaac-sim/IsaacLab/blob/v2.1.0/source/isaaclab/isaaclab/sensors/contact_sensor/contact_sensor.py):
+  one sensor body can filter against target bodies, requires contact reporter
+  activation, and requests forces with `dt=self._sim_physics_dt`. The adapter
+  reads the lazily updated data after each scene update, with history disabled.
+- [RigidObject velocity setters](https://github.com/isaac-sim/IsaacLab/blob/v2.1.0/source/isaaclab/isaaclab/assets/rigid_object/rigid_object.py):
+  update simulator and cached COM velocities; the setter clears cached body
+  acceleration. The centered sphere has coincident root and COM positions.
+- [SimulationCfg / PhysxCfg](https://github.com/isaac-sim/IsaacLab/blob/v2.1.0/source/isaaclab/isaaclab/sim/simulation_cfg.py):
+  bounce threshold default 0.5 m/s. The adapter receives the actual runtime
+  value and leaves lower-speed settling to native PhysX.
+- [PACE table asset at the reviewed revision](https://github.com/ohowo/PACE-ICRA2026/blob/778700cd4b2aae9d93bb42bd00eb6d833b896e64/legged_lab/assets/table_tennis/table/pp_table_ver2.usd),
+  blob `1dbaa7fc22157e34fb2cb29ac6846af81f91d8eb`: verified against the inspected
+  local USD. The physics composition places the table rigid body at `base_link`.
+  The sensor filter is `{ENV_REGEX_NS}/Table/base_link`, not the non-body parent.
+  The existing collider includes table/net geometry, so force and geometry
+  guards also reject side/edge/net contacts.
+
+| New rule / reused input | Value | Classification and code |
+| --- | --- | --- |
+| Shared table plane | 0.76 m | Existing nominal tabletop height, moved to `TableCfg.surface_height`; no geometry change |
+| Interior footprint | Existing table X/Y contact bounds, inset by ball radius | Conservative face-only scope in `replace_table_response`, excludes edges |
+| Position slack | 0.005 m | Numerical guard accommodating native offsets; not a deformation depth |
+| Normal-force tolerance | 1e-6 N + 1e-4 times absolute table Fz | Numerical guard for upward normal and no other body's contact |
+| Table motion guard | speed <1e-3 m/s and <1e-3 rad/s | Numerical definition of supported stationary table |
+| Table orientation guard | quaternion vector-part norm <1e-4 | Conservative axis-alignment guard |
+| Near-top guard | One endpoint at most one radius above contact height | Geometry safeguard against net-top contacts, even at extreme speed |
+
+Unsupported contacts retain native velocities. Supported normals must be
+upward and exclusive to the table; separating/low-speed contacts are not
+replaced. All response calculations are batched; no per-environment Python
+loop, GPU-to-host contact selection or material rewrite is added. There is
+one full-batch velocity write per substep, including unchanged native rows.
+This preserves those velocities but inherits the asset setter's cache reset
+behavior. Runtime sensor/write overhead is not yet measured.
+
+CPU tests exercise reconstruction independently of native restitution,
+contact-speed variation, agreement with prediction, spin generation, energy,
+constant overrides, float32/float64 and mixed batches, net/edge/other-body
+exclusion, low-speed settling, source configuration and the actual task
+substep loop with a stand-in solver. They check force staging once, response
+replacement after sensor update and before observation, unchanged native
+positions, and no repeat use of a captured contact.
+
+Limitations: this is a substep velocity-response approximation, not a PhysX
+contact-modification callback. Native impact-substep positions are retained;
+tangential force evolution and angular damping inside the substep are not
+reconstructed. The immovable-table assumption neglects the difference in
+reaction on the heavy table. Prediction still has no native low-speed
+settling threshold. GPU contact force reporting/timing, stability and
+throughput remain untested because no Isaac Sim/Lab GPU run was performed.
+Mass, radius, thin-shell inertia, air density, Cd, Magnus curves, ball/racket
+materials and the native table material retain their recorded provenance.
+
 | Date | Code or change reviewed | Provenance check |
 | --- | --- | --- |
 | 2026-11-04 | Baseline `77e8017`, covering [PR #2](https://github.com/ohowo/PACE-ICRA2026/pull/2), [PR #3](https://github.com/ohowo/PACE-ICRA2026/pull/3), [PR #4](https://github.com/ohowo/PACE-ICRA2026/pull/4) and [PR #5](https://github.com/ohowo/PACE-ICRA2026/pull/5) | Created the register, checked the four dataset blobs at the pinned revision and reran the coefficient fit and test-set evaluation. Recorded the standards, inherited values and remaining validation gaps. This change updates the documentation and maintenance rules. |
@@ -446,3 +520,4 @@ extrapolation is not experimentally established by this change.
 | 2026-11-09 | Magnus-aware table approach at base `6478779` | Applied the existing force law through contact, retained numerical incident velocity for rebound, recorded contact-event derivation and validity handling, and checked CPU numerical consistency. No new external input, coefficient fit or physical parameter change. |
 | 2026-11-12 | Unified thin-shell rebound at base `d6b3523` | Removed fixed horizontal retention and made the existing impulse law universal for prediction. Derived default friction 0.25 from pinned material inputs; retained restitution/inertia and recorded migration, CPU checks and the remaining PhysX mismatch. No new experimental data or fit. |
 | 2026-11-12 | Speed-dependent table restitution at base `110f0aa` | Adopted versioned base-model intercept 0.98 and slope 0.02 s/m; documented sign conversion, units, clipping assumption, constant-law migration, CPU checks and unchanged live PhysX response. No dataset or new fit. |
+| 2026-11-13 | Live tabletop response at base `778700c` | Reused the shared speed-dependent restitution and thin-shell coefficients; documented momentum reconstruction, pinned sensor/setter APIs, verified asset body path, numerical guards, CPU wiring tests and native fallback/runtime limitations. No new dataset or fit. |

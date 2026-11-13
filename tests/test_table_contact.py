@@ -142,7 +142,7 @@ class TableContactTest(unittest.TestCase):
                      str(source), "exec"), namespace)
         env = SimpleNamespace(
             aero=self.field(), device="cpu",
-            cfg=SimpleNamespace(table=SimpleNamespace(bounce_restitution=0.98,
+            cfg=SimpleNamespace(table=SimpleNamespace(surface_height=0.76, bounce_restitution=0.98,
                                 bounce_restitution_speed_slope=0.02,
                                 bounce_friction=0.25, bounce_tangential_restitution=0)),
             ball=SimpleNamespace(cfg=SimpleNamespace(spawn=SimpleNamespace(

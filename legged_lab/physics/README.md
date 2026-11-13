@@ -284,11 +284,10 @@ nonnegative coefficient (normally 0.25). Passing `None` now raises a clear
 error; use `0.0` for frictionless thin-shell contact. The linear-only
 `predict_table_rebound` API remains available but also uses the impulse model.
 
-This unifies prediction only. Live PhysX contacts and racket material values
-are unchanged. In particular, nominal ball-table material restitution remains
-0.925 under average combining, while prediction uses the speed-dependent law;
-matching their real contact response still requires separate validation.
-No second contact impulse is applied to the live ball.
+The same impulse law now replaces eligible live tabletop responses (see
+below). Authored PhysX materials are unchanged; nominal pair restitution
+0.925 remains the native fallback for contacts outside this supported case.
+No second impulse is added to an already-bounced velocity.
 
 When Magnus is enabled, the task passes the returned rebound spin to
 `predict_flight_apex`. For a ball that has already bounced, it instead uses
@@ -381,8 +380,8 @@ playing surface. In the one-dimensional quadratic-drag model above, that
 corresponds to a normal restitution of about 0.905. The historical constant
 table value of 0.90 gives about 228 mm in that model. The new speed-dependent
 law gives approximately 244 mm (e_n about 0.932 at impact); this is a model
-output, not certification or a measured bounce. PhysX resolves contact
-using the rigid sphere and the contact materials.
+output, not certification or a measured bounce. PhysX detects contact with
+the rigid sphere; the live adapter replaces supported tabletop velocities.
 
 The separate ITTF M3 ball approval test specifies a 240–265 mm rebound from a
 305 mm drop onto a standard steel block. M3 also specifies a slow 50 N
@@ -392,6 +391,66 @@ hardness and steel-block rebound. Dynamic stiffness, damping, and tangential
 restitution for a particular table or racket rubber require separate data.
 
 [ITTF Laws 2.1 and 2.3](https://documents.ittf.sport/sites/default/files/public/2026-02/2026_Statutes_v1_consolidated_clean.pdf) · [ITTF M3 Ball Manual](https://equipments.ittf.com/#/equipment/manuals) · [Measured speed and spin dependence](https://arxiv.org/abs/2606.28805)
+
+## Live tabletop response
+
+`TableCfg.live_impact_enabled=True` enables `LiveTableImpact` in the existing
+physics substep loop. A single-body contact sensor on the ball filters normal
+forces against `Table/base_link`. PhysX still detects collisions and resolves
+positions. After `scene.update`, before perception/rewards consume state, the
+adapter replaces eligible outgoing linear and angular velocities using the
+same `resolve_ball_impact` law as trajectory prediction.
+
+For a confirmed upward tabletop normal force on the ball, let `v_native` be
+the velocity after PhysX and `F_table_z` the normal contact force reported for
+that same substep. Recover the incident normal component by removing the
+native normal impulse:
+
+`v_minus_z = v_native_z - F_table_z*physics_dt/m`.
+
+Then `u_n=max(-v_minus_z,0)` and `e_n=clip(0.98-0.02*u_n,0,1)` feed the shared
+normal/friction/angular impulse calculation. Tangential incident velocity
+uses the pre-step velocity plus the already-staged flight force times dt/m;
+spin is sampled before the native step. The adapter **replaces** velocities,
+not adds this impulse to `v_native`. Thus the new normal response does not
+retain the old material restitution or double-count the collision. Position
+and orientation remain the native solver's outputs; no teleport, second
+simulation step or second aerodynamic force application is performed.
+
+This supports the stationary, axis-aligned tabletop interior. The ball center
+must remain inside the table footprint with one radius inset, near the top
+plane, and at least one substep endpoint must be within one radius above the
+contact height. The sensor must report a positive upward table normal with
+no other body's normal force. Net, side/edge, simultaneous multi-body and
+moving/tilted-table contacts retain their native response. Below the live
+PhysX `bounce_threshold_velocity` (0.5 m/s in the reviewed Isaac Lab 2.1.0
+configuration), native low-speed settling is retained. This threshold comes
+from the active simulation configuration, not a second hard-coded value.
+Prediction does not model that settling regime.
+
+Numerical selection guards are 5 mm vertical slack, normal-force tolerance
+`1e-6 N + 1e-4*abs(Fz)`, table speed below 1e-3 m/s and 1e-3 rad/s, and
+quaternion vector-part norm below 1e-4. They are conservative implementation
+assumptions, not fitted physical parameters. Standard tabletop height 0.76 m
+is now shared through `TableCfg.surface_height`. Existing footprint bounds,
+ball properties and restitution/friction settings are reused.
+
+This is a velocity-level substep approximation. Tangential flight forces and
+spin are sampled before collision; force evolution during the rest of that
+substep, any native angular damping within it, and the small change to the
+table's reaction are not reconstructed. The stationary-table model treats
+the table as an immovable surface. Native positions still reflect the old
+response during the impact substep. GPU sensor impulse semantics, timing,
+contact stability and training throughput require an Isaac runtime check;
+CPU tests validate arithmetic and wiring only.
+
+The adapter uses batched device tensor operations and one velocity write per
+substep, with exact native velocity rows for unselected environments. The
+asset setter also refreshes its cached velocity and clears cached body
+acceleration. There is no Python loop over environments, host-side contact
+selection, per-step material update or extra integration loop. Sensor and
+velocity-write overhead have not been benchmarked. Set
+`live_impact_enabled=False` to restore native response for all contacts.
 
 ## Symmetric allround racket rubber
 

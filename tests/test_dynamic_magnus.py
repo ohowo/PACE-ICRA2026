@@ -147,6 +147,7 @@ class DynamicMagnusTest(unittest.TestCase):
         ball.set_external_force_and_torque.side_effect = stage
         env = SimpleNamespace(
             cfg=SimpleNamespace(sim=SimpleNamespace(decimation=3)), sim_step_counter=0,
+            live_table_impact=None,
             robot=Mock(), action_joint_ids=[], aero=field, ball=ball, physics_dt=dt,
             sim=SimpleNamespace(step=integrate),
             scene=SimpleNamespace(write_data_to_sim=lambda: order.append("write"),

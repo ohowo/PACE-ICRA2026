@@ -138,6 +138,11 @@ class FlightPredictionTest(unittest.TestCase):
         expected, expected_t, _ = predict_flight_apex(
             env.ball_pos, torch.cat((bounced_v, env.ball_linvel[1:])),
             torch.cat((bounced_w, env.ball_angvel[1:])), aero=env.aero, mass_kg=0.0027)
+        # Physical results are retained before controller reachability clamps.
+        torch.testing.assert_close(env.ball_physical_apex, expected)
+        torch.testing.assert_close(env.ball_physical_apex_time, expected_t)
+        self.assertTrue(env.ball_physical_apex_valid.all())
+        self.assertGreater(env.ball_physical_apex[0, 0], -1.6)
         expected[:, 0].clamp_(max=-1.6)  # Existing task reachability clamp.
         torch.testing.assert_close(env.ball_future_pose, expected)
         torch.testing.assert_close(env.t_before[:1], expected_t[:1])
@@ -172,3 +177,16 @@ class FlightPredictionTest(unittest.TestCase):
         self.assertLess(expected_x, -1.6)
         torch.testing.assert_close(env.pos_pred_before[0, 0], expected_x.clamp(max=-1.6))
         namespace["predict_flight_apex"].assert_not_called()
+
+        # Controller hit masks do not replace the retained physical apex.
+        raw = env.ball_physical_apex.clone()
+        env.has_touch_paddle[:] = True
+        namespace["predict"](env)
+        torch.testing.assert_close(env.ball_physical_apex, raw)
+        self.assertTrue(env.mask_invalid.all())
+        # An already descending ball has no future ascent apex.
+        env.ball_linvel[1, 2] = -1
+        namespace["predict"](env)
+        self.assertFalse(env.ball_physical_apex_valid[1])
+        self.assertTrue(torch.isnan(env.ball_physical_apex[1]).all())
+        self.assertTrue(torch.isnan(env.ball_physical_apex_time[1]))

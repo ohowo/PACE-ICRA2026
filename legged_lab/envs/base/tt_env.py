@@ -37,6 +37,7 @@ from legged_lab.physics.aerodynamics import AeroForceField
 from legged_lab.physics.table_prediction import predict_table_rebound_state
 from legged_lab.physics.flight_prediction import predict_flight_apex, predict_table_contact
 from legged_lab.physics.live_table_impact import LiveTableImpact
+from legged_lab.physics.trajectory_prediction import predict_timed_trajectory
 
 #TODO: move this functio to tt_config.py
 @configclass
@@ -857,6 +858,30 @@ class TTEnv(VecEnv):
         )
         self.delayed_perception = self.perception_buffer.compute(self.current_perception)
 
+    def predict_ball_trajectory(self, *, step_s=0.02, max_time_s=1.5, max_bounces=1):
+        """Return unclamped timed physical states from the current simulator state.
+
+        Positions use the existing table-relative, world-aligned frame; times
+        start at this call. This on-demand API does not change policy inputs,
+        targets, live state, or contact flags. It assumes the existing fixed
+        horizontal table and an infinite contact plane. max_bounces=0 stops at
+        the next contact; 1 includes one future rebound and stops at the next.
+        Consumers must check per-sample and contact-event validity. Reachability
+        selection belongs outside the physical trajectory.
+        """
+        table = self.cfg.table
+        return predict_timed_trajectory(
+            self.ball.data.root_pos_w - self.table.data.root_pos_w,
+            self.ball.data.root_lin_vel_w, self.ball.data.root_ang_vel_w,
+            aero=self.aero, mass_kg=self.ball.cfg.spawn.mass_props.mass,
+            gravity=9.81, step_s=step_s, max_time_s=max_time_s,
+            table_height=table.surface_height + self.aero.r, radius=self.aero.r,
+            max_bounces=max_bounces, restitution=table.bounce_restitution,
+            restitution_speed_slope=table.bounce_restitution_speed_slope,
+            friction=table.bounce_friction,
+            tangential_restitution=table.bounce_tangential_restitution,
+        )
+
     def compute_paddle_touch(self):
         self.ball_global_pos = self.ball.data.root_pos_w 
 
@@ -1093,8 +1118,26 @@ class TTEnv(VecEnv):
             self.t_after = ascent_time[:, 1]
             apex_valid = torch.where(self.mask_before, self.valid_land & valid[:, 0], valid[:, 1])
 
-        xpb=torch.clamp(xpb, max=-1.6)
-        xpa=torch.clamp(xpa, max=-1.6)
+        # Retain the physical apex separately before controller-only clamps
+        # and invalid-target fallbacks. Nonascending states have no future
+        # apex, even though the legacy helper returns their starting position.
+        self.ball_physical_apex_valid = torch.where(
+            self.mask_before, self.valid_land & apex_valid & (vz_dd > 0),
+            apex_valid & (vz > 0),
+        )
+        raw_apex = torch.where(self.mask_before.unsqueeze(-1),
+                              torch.stack((xpb, ypb, zpb), dim=-1),
+                              torch.stack((xpa, ypa, zpa), dim=-1))
+        self.ball_physical_apex = torch.where(
+            self.ball_physical_apex_valid.unsqueeze(-1), raw_apex, float("nan"))
+        self.ball_physical_apex_time = torch.where(
+            self.ball_physical_apex_valid,
+            torch.where(self.mask_before, self.t_before, self.t_after), float("nan"))
+
+        # Legacy policy/reward references remain bounded for compatibility;
+        # these are controller targets, not physical trajectory coordinates.
+        xpb = torch.clamp(xpb, max=-1.6)
+        xpa = torch.clamp(xpa, max=-1.6)
 
         self.pos_pred_before = torch.stack([xpb, ypb, zpb], dim=-1)
         self.pos_pred_after = torch.stack([xpa, ypa, zpa], dim=-1)

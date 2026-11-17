@@ -477,3 +477,83 @@ elasticity. These are fits to the published experiments. The live PhysX
 material uses rigid contact and Coulomb friction.
 
 [Racket and rubber experiments](https://arxiv.org/abs/2604.11349) · [Public training and test data](https://github.com/gossardt/tt_rackets/tree/main/data)
+
+## Timed physical trajectories
+
+`predict_timed_trajectory` returns the full time-indexed physical state instead
+of a single landing/apex point. It has no robot workspace clamp or fallback
+target. Use it directly for simulator-independent predictions, or call:
+
+```python
+trajectory = env.predict_ball_trajectory(
+    step_s=0.02, max_time_s=1.5, max_bounces=1,
+)
+# For N environments and the defaults: 76 samples including t=0 and t=1.5.
+times = trajectory.time                 # (S,), seconds from this call
+positions = trajectory.position         # (N, S, 3), meters
+velocities = trajectory.velocity        # (N, S, 3), m/s
+spins = trajectory.spin                 # (N, S, 3), rad/s
+valid = trajectory.valid                # (N, S), bool
+phase = trajectory.bounce_count         # (N, S), 0 or 1; -1 if invalid
+contacts = trajectory.contacts          # event times and both sides of impact
+```
+
+The environment API reads the current simulator state, uses table-relative
+positions in world-aligned axes, and inherits the existing ball, air and
+table-impact parameters. It is **on demand**: it does not add a rollout to
+every training step or change policy inputs, rewards, live physics or learned
+predictor targets. A future interception selector must call it and select
+reachable states without changing their coordinates. All defaults retain
+their existing provenance; no new empirical fit is introduced.
+
+The standalone function accepts any matching `(..., 3)` state batch. Numeric
+outputs retain input dtype/device. Forces use the existing shared vector
+drag/Magnus adapter even when Magnus is disabled. Explicit midpoint steps
+are at most `step_s`; the last time is exactly `max_time_s`. The contact step
+is split at the descending plane event, the thin-shell impulse changes both
+velocity and spin, and the remaining step integrates the new state. No
+additional impulse is applied to a measured, already-bounced initial state
+unless the trajectory subsequently reaches the contact plane again.
+
+`table_height` in the standalone API is the ball-center contact height
+(`surface_height + radius`, nominally 0.780 m). `None` requests unrestricted
+free flight. With a plane, `max_bounces=0` ends at the first contact;
+`max_bounces=1` includes one future rebound and ends at the next contact.
+Neither option models finite table bounds, net/edge collisions, paddle
+contact, or robot reachability. The plane is stationary and horizontal.
+An impact with no upward rebound ends the trajectory; resting/settling is
+not simulated. This stage does not implement multi-bounce rally prediction.
+
+Contact arrays have shape `(..., max_bounces+1)` (plus a final 3 for vectors),
+or zero event slots for unrestricted free flight. Each valid slot records
+`time`, `position`, `velocity_before/after`, `spin_before/after`, and `bounced`.
+A terminating contact has `bounced=False` and its after-state equals the
+incident state because no further response is modeled. Event positions lie
+on the numerical contact plane; no reachability shift is applied. The exact
+input state remains sample zero, including for a t=0 impact; contact metadata
+then carries that impulse. Later samples at rebound times are post-impulse.
+
+Always read `valid` before consuming samples. Invalid input/integration rows
+and grid samples after termination contain NaN states and a bounce count of
+-1. Unused event slots contain NaN and `contacts.valid=False`. Off-grid terminal
+contacts have their own event times rather than being mislabeled as grid
+samples. Reaching the horizon without a contact is valid free flight, not a
+claim that a future contact was found. Prediction is inference-only and
+does not build an autograd graph.
+
+The existing apex path now also exposes `ball_physical_apex`,
+`ball_physical_apex_time` and `ball_physical_apex_valid` before controller
+clamping/fallback. A nonascending current flight has no future apex and is
+marked invalid. These fields retain the existing apex solver's numerical or
+analytical approximation; they are separate from the new sampled trajectory.
+Legacy `ball_future_pose` and `pos_pred_*` remain controller/reward references
+for compatibility and must not be interpreted as unmodified physical states.
+
+CPU tests cover exact vacuum samples/events, independent fine RK4 flight,
+post-bounce force updating, two contacts within a step, terminal timing,
+float32/64 batches, airflow, invalid masks, ownership, and the actual
+environment accessor/apex routing. The implementation uses bounded loops
+over time and contact slots, not individual balls, without device-to-host
+contact selection. Runtime throughput, GPU integration and physical accuracy
+remain unverified. Numerical tolerances in tests are not real-world error
+bounds.

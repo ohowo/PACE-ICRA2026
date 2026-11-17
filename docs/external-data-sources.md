@@ -510,6 +510,58 @@ throughput remain untested because no Isaac Sim/Lab GPU run was performed.
 Mass, radius, thin-shell inertia, air density, Cd, Magnus curves, ball/racket
 materials and the native table material retain their recorded provenance.
 
+### Timed physical trajectory output (2026-11-16)
+
+Reviewed development commit `87479a2d9f640b31fc66d90ba3277d727e1254b1`.
+`physics/trajectory_prediction.py` adds full position/velocity/spin samples
+and explicit contact events using the existing aerodynamic adapter,
+thin-shell impulse solver, and midpoint/contact-interpolation relations.
+`TTEnv.predict_ball_trajectory` is an on-demand accessor of current physical
+state in the existing table-relative, world-aligned frame. Controller
+reachability clamps are not applied to its outputs. The legacy apex path now
+retains a separate physical result before controller target modification.
+
+Reviewed unchanged inputs: nominal radius 0.020 m, mass 0.0027 kg, inertia
+`I/m=2r^2/3`, density 1.225 kg/m^3, Cd 0.4378, gravity 9.81 m/s^2, Conti
+speed/spin curves and their existing conversion/guards, table e0=0.98 and
+c=0.02 s/m, friction 0.25, tangential restitution zero, and table surface
+height 0.760 m. Their source entries above require no changes. No external
+dataset, filtering/split, new fitted coefficient or dependency was added.
+The same limitations on empirical calibration and aerodynamic torque apply.
+
+New output and numerical choices (implementation assumptions, not measured
+parameters): samples include t=0 and the requested horizon; the default
+maximum step 0.020 s and horizon 1.5 s reuse the existing flight predictor
+settings (76 samples). The default allows one future plane rebound, followed
+by flight to the next contact or horizon. A zero-bounce option stops at first
+contact. A contact with no upward response terminates instead of inventing
+a settling model. No finite-table, edge/net or paddle collision geometry is
+introduced. All physical positions remain in their supplied frame; assigning
+the event z coordinate to the contact plane is event location, not a robot
+reachability adjustment. Invalid samples/events are flagged and contain NaN.
+The first sample preserves the input state and separately records t=0
+contacts. Terminal off-grid events keep their actual predicted event time.
+
+The contact substep is split, and the remaining duration is integrated using
+the outgoing velocity and angular velocity. Both sides of the collision are
+retained; the terminal event is not bounced and reports identical before/after
+states. Free flight uses vector drag consistently even with Magnus disabled;
+this new API does not change the existing policy's analytical fallback.
+Elapsed-time prediction uses the shared force law rather than an extra force
+or time multiplier. Spin is held constant between impulses as before.
+
+CPU checks compare full vacuum states and contact times against independent
+closed forms, full spinning flight against 0.5 ms RK4 (3 mm position and
+0.005 m/s velocity tolerances in the tested cases), and post-bounce intervals
+against fine integration. They also exercise mixed batches, float32/64,
+airflow, two contacts in one step, terminal/event timing, zero-restitution
+termination, invalid states, input ownership and actual environment methods.
+The raw apex is checked against the unclamped prediction independently of
+controller invalidation. These are numerical consistency tests, not new
+physical calibration. No Isaac Sim/Lab GPU run, robot training or throughput
+benchmark was performed. The on-demand full-state rollout adds work only
+when called; legacy training entry points and policy observations are intact.
+
 | Date | Code or change reviewed | Provenance check |
 | --- | --- | --- |
 | 2026-11-04 | Baseline `77e8017`, covering [PR #2](https://github.com/ohowo/PACE-ICRA2026/pull/2), [PR #3](https://github.com/ohowo/PACE-ICRA2026/pull/3), [PR #4](https://github.com/ohowo/PACE-ICRA2026/pull/4) and [PR #5](https://github.com/ohowo/PACE-ICRA2026/pull/5) | Created the register, checked the four dataset blobs at the pinned revision and reran the coefficient fit and test-set evaluation. Recorded the standards, inherited values and remaining validation gaps. This change updates the documentation and maintenance rules. |
@@ -521,3 +573,4 @@ materials and the native table material retain their recorded provenance.
 | 2026-11-12 | Unified thin-shell rebound at base `d6b3523` | Removed fixed horizontal retention and made the existing impulse law universal for prediction. Derived default friction 0.25 from pinned material inputs; retained restitution/inertia and recorded migration, CPU checks and the remaining PhysX mismatch. No new experimental data or fit. |
 | 2026-11-12 | Speed-dependent table restitution at base `110f0aa` | Adopted versioned base-model intercept 0.98 and slope 0.02 s/m; documented sign conversion, units, clipping assumption, constant-law migration, CPU checks and unchanged live PhysX response. No dataset or new fit. |
 | 2026-11-13 | Live tabletop response at base `778700c` | Reused the shared speed-dependent restitution and thin-shell coefficients; documented momentum reconstruction, pinned sensor/setter APIs, verified asset body path, numerical guards, CPU wiring tests and native fallback/runtime limitations. No new dataset or fit. |
+| 2026-11-16 | Timed physical trajectories at base `87479a2` | Reused existing force/contact inputs, documented sampling/event semantics and numerical guards, retained physical apex before target modification, and checked CPU numerical and environment consistency. No new external data or fit. |
